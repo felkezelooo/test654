@@ -138,8 +138,10 @@ async function getVideoDuration(page) {
 
 async function clickIfExists(page, selector, timeout = 3000) {
     try {
-        await page.waitForSelector(selector, { state: 'visible', timeout });
-        await page.click(selector, { timeout: timeout / 2 });
+        // Wait for element to be visible and stable, then click
+        const element = page.locator(selector).first(); // Take the first if multiple
+        await element.waitFor({ state: 'visible', timeout });
+        await element.click({ timeout: timeout / 2, force: false, noWaitAfter: false }); // Ensure click completes
         GlobalLogger.info(`Clicked on selector: ${selector}`);
         return true;
     } catch (e) {
@@ -183,8 +185,8 @@ async function handleAds(page, platform, effectiveInput) {
         if (effectiveInput.autoSkipAds && canSkip) {
             GlobalLogger.info('Attempting to skip ad (autoSkipAds).');
             await clickIfExists(page, '.ytp-ad-skip-button-modern, .ytp-ad-skip-button, button[aria-label*="Skip Ad"], div[class*="skip-button"]', 1000);
-            await page.waitForTimeout(2000);
-            continue;
+            await page.waitForTimeout(2000); // Wait for ad to potentially disappear
+            continue; // Re-check immediately if ad is gone
         }
 
         if (adCurrentTime >= minSkipTime && canSkip) {
@@ -201,7 +203,7 @@ async function handleAds(page, platform, effectiveInput) {
              } else {
                 GlobalLogger.info('Max ad watch time reached, but cannot skip yet.');
              }
-             break; 
+             break; // Exit ad loop if max ad time is reached
         }
         await page.waitForTimeout(adCheckInterval);
     }
@@ -237,7 +239,7 @@ async function watchVideoOnPage(page, platform, job, effectiveInput) {
         }
         if (!played) {
              logEntry('No specific play button found, attempting to click video element directly.');
-             await page.locator('video').first().click({timeout: 5000}).catch(e => logEntry(`Failed to click video: ${e.message}`, 'warn'));
+             await page.locator('video').first().click({timeout: 5000, force: true}).catch(e => logEntry(`Failed to click video: ${e.message}`, 'warn'));
         }
         await page.evaluate(() => { const v = document.querySelector('video'); if(v) { v.muted=false; v.volume=0.1+Math.random()*0.2; }}).catch(e => logEntry(`Unmute/volume failed: ${e.message}`, 'debug'));
 
@@ -252,7 +254,7 @@ async function watchVideoOnPage(page, platform, job, effectiveInput) {
 
         let currentActualWatchTime = 0;
         const watchIntervalMs = 5000;
-        const maxWatchLoops = Math.ceil(targetWatchTimeSec / (watchIntervalMs / 1000)) + 12;
+        const maxWatchLoops = Math.ceil(targetWatchTimeSec / (watchIntervalMs / 1000)) + 12; // Extra loops for ads/buffering
 
         for (let i = 0; i < maxWatchLoops; i++) {
             logEntry(`Watch loop ${i+1}/${maxWatchLoops}. Ads check.`);
@@ -263,7 +265,7 @@ async function watchVideoOnPage(page, platform, job, effectiveInput) {
             if (videoState.p && !videoState.e) {
                 logEntry('Paused, trying to play.');
                 for (const sel of playButtonSelectors) if (await clickIfExists(page, sel, 2000)) break;
-                await page.locator('video').first().click({timeout:2000}).catch(e => logEntry(`Fallback click failed: ${e.message}`, 'debug'));
+                await page.locator('video').first().click({timeout:2000, force: true}).catch(e => logEntry(`Fallback click failed: ${e.message}`, 'debug'));
             }
             currentActualWatchTime = videoState.ct || 0;
             jobResult.watchTimeActualSec = currentActualWatchTime;
@@ -301,8 +303,8 @@ async function runSingleJob(job, effectiveInput, actorProxyConfiguration, custom
     };
     const logEntry = (msg, level = 'info') => {
         const tsMsg = `[${new Date().toISOString()}] [${level.toUpperCase()}] ${msg}`;
-        jobScopedLogger[level](msg);
-        jobResult.log.push(tsMsg);
+        jobScopedLogger[level](msg); // Log to Actor.log (or console if Actor.log is not set)
+        jobResult.log.push(tsMsg); // Also add to job's specific log array
     };
 
     try {
@@ -324,7 +326,7 @@ async function runSingleJob(job, effectiveInput, actorProxyConfiguration, custom
             }
         }
 
-        browser = await playwright.chromium.launch(launchOptions); // Using playwright module directly
+        browser = await playwright.chromium.launch(launchOptions); // Use playwright module directly
         
         context = await browser.newContext({
             bypassCSP: true, ignoreHTTPSErrors: true,
@@ -335,20 +337,40 @@ async function runSingleJob(job, effectiveInput, actorProxyConfiguration, custom
         page = await context.newPage();
         await page.setViewportSize({ width: 1200 + Math.floor(Math.random()*120), height: 700 + Math.floor(Math.random()*80) });
 
-        // Changed waitUntil to 'load' for potentially better stability on media pages
+        logEntry(`Navigating to ${job.url} with waitUntil: 'load' and timeout ${effectiveInput.timeout}s.`);
         await page.goto(job.url, { timeout: effectiveInput.timeout * 1000, waitUntil: 'load' });
-        logEntry(`Navigated to ${job.url} (waitUntil: 'load')`);
+        logEntry(`Navigation to ${job.url} complete.`);
 
-        // Add a specific wait for the video element to be present and potentially intractable
-        try {
-            await page.waitForSelector('video', { state: 'attached', timeout: 30000 }); // Wait up to 30s for video tag
-            logEntry('Video element is attached to the DOM.');
-        } catch (videoWaitError) {
-            logEntry(`Video element did not attach within 30s: ${videoWaitError.message}`, 'warn');
-            // Decide if this is a critical failure or if we should proceed
-            // For now, let watchVideoOnPage handle it, it will fail if it can't find the video
+        // Attempt to handle cookie consent popups
+        const consentSelectors = [
+            'button[aria-label*="Accept all"]', 'button[aria-label*="Agree"]', 'button:has-text("Accept All")', 'button:has-text("I Agree")',
+            'div[aria-modal="true"] button:has-text("Accept all")', 'div[aria-modal="true"] button:has-text("I agree")'
+            // Add more selectors if specific ones are identified for YouTube/Rumble
+        ];
+        let consentClicked = false;
+        for (const selector of consentSelectors) {
+            if (await clickIfExists(page, selector, 5000)) {
+                logEntry(`Clicked a consent button: ${selector}`);
+                await page.waitForTimeout(2000 + Math.random() * 1000); // Allow page to react
+                consentClicked = true;
+                break;
+            }
         }
-
+        if (!consentClicked) {
+            logEntry('No common consent popups found/clicked.', 'debug');
+        }
+        
+        const playerSelector = platform === 'youtube' ? '#movie_player, video.html5-main-video' : '.rumble-player-video-wrapper, video.rumble-player';
+        try {
+            logEntry(`Waiting for player element (${playerSelector}) to be visible.`);
+            await page.waitForSelector(playerSelector, { state: 'visible', timeout: 45000 }); // Increased timeout
+            logEntry(`Player element (${playerSelector}) is visible.`);
+        } catch (videoWaitError) {
+            logEntry(`Player element (${playerSelector}) did not become visible within 45s: ${videoWaitError.message}`, 'error');
+            const pageContent = await page.content().catch(() => 'Could not get page content.');
+            logEntry(`Page content sample: ${pageContent.substring(0, 500)}`, 'debug');
+            throw new Error(`Player element not visible: ${videoWaitError.message}`); // Re-throw to fail the job
+        }
 
         const watchResult = await watchVideoOnPage(page, job.platform, job, effectiveInput);
         Object.assign(jobResult, watchResult);
@@ -369,11 +391,16 @@ async function actorMainLogic() {
     console.log('ACTOR_MAIN_LOGIC: Entered main logic function.');
     await ApifyModule.Actor.init();
     console.log('ACTOR_MAIN_LOGIC: Actor.init() completed.');
+    
     if (ApifyModule.Actor.log && typeof ApifyModule.Actor.log.info === 'function') {
         console.log('ACTOR_MAIN_LOGIC: Actor.log is available. Switching GlobalLogger.');
         GlobalLogger = ApifyModule.Actor.log;
-    } else {
-        console.error('ACTOR_MAIN_LOGIC: Actor.log or Actor.log.info is NOT available. Using console for logging.');
+    } else if (ApifyModule.utils && ApifyModule.utils.log && typeof ApifyModule.utils.log.info === 'function') {
+        console.log('ACTOR_MAIN_LOGIC: Actor.log not available, but Apify.utils.log is. Switching GlobalLogger.');
+        GlobalLogger = ApifyModule.utils.log;
+    }
+     else {
+        console.error('ACTOR_MAIN_LOGIC: Neither Actor.log nor Apify.utils.log is available. Using console for logging.');
     }
     GlobalLogger.info('Starting YouTube & Rumble View Bot Actor (Apify SDK v3 compatible).');
 

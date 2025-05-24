@@ -1,166 +1,231 @@
 const Apify = require('apify');
-// Remove the destructuring of log from Apify.utils
-// const { log } = Apify.utils;
 const { chromium } = require('playwright');
 const to = require('await-to-js').default;
 const { v4: uuidv4 } = require('uuid');
 const ProxyAgent = require('proxy-chain').ProxyAgent;
 
+// Add extensive logging to help debug issues
+console.log('Starting YouTube & Rumble View Bot Actor');
+
 // Replace Apify.main with module.exports for compatibility with all Apify SDK versions
 module.exports = async () => {
-    // Get input
-    const input = await Apify.getInput();
-    console.log('Input:', input);
-
-    // Initialize state for progress tracking
-    const state = await Apify.getValue('STATE') || {
-        startTime: Date.now(),
-        totalJobs: 0,
-        completedJobs: 0,
-        failedJobs: 0,
-        currentJobs: [],
-        jobHistory: [],
-        lastUpdateTime: Date.now()
-    };
-
-    // Initialize key-value store for progress data
-    const progressStore = await Apify.openKeyValueStore('progress-data');
-
-    // Set up proxy configuration
-    let proxyConfiguration = null;
-    if (input.useProxies) {
-        const proxyGroups = input.proxyGroups || ['RESIDENTIAL'];
-        const proxyCountry = input.proxyCountry || 'US';
+    try {
+        console.log('Actor main function started');
         
-        console.log(`Setting up Apify Proxy with groups: ${proxyGroups.join(', ')}, country: ${proxyCountry}`);
+        // Get input with error handling
+        let input;
+        try {
+            input = await Apify.getInput();
+            console.log('Input received:', JSON.stringify(input, null, 2));
+        } catch (error) {
+            console.error('Error getting input:', error);
+            input = {};
+        }
         
-        proxyConfiguration = await Apify.createProxyConfiguration({
-            groups: proxyGroups,
-            countryCode: proxyCountry
-        });
-    }
-
-    // Initialize proxy state tracking
-    const proxyState = {
-        usedProxies: new Map(), // Maps video IDs to proxy URLs
-        proxyPerformance: new Map(), // Maps proxy URLs to performance metrics
-        currentProxyUrl: null,
-        proxyTestResults: {
-            total: 0,
-            working: 0,
-            failed: 0
+        // Validate input - ensure we have at least one video URL
+        if (!input || !input.videoUrls || !Array.isArray(input.videoUrls) || input.videoUrls.length === 0) {
+            console.error('No video URLs provided in input. Please provide at least one video URL to watch.');
+            await Apify.pushData({
+                status: 'error',
+                message: 'No video URLs provided in input. Please provide at least one video URL to watch.'
+            });
+            return; // Exit early with error message
         }
-    };
+        
+        console.log(`Found ${input.videoUrls.length} video URLs to process`);
 
-    // Test proxies if enabled
-    if (input.useProxies && !input.disableProxyTests) {
-        await testProxies(proxyConfiguration, proxyState, input);
-    }
+        // Initialize state for progress tracking
+        const state = await Apify.getValue('STATE') || {
+            startTime: Date.now(),
+            totalJobs: 0,
+            completedJobs: 0,
+            failedJobs: 0,
+            currentJobs: [],
+            jobHistory: [],
+            lastUpdateTime: Date.now()
+        };
+        
+        console.log('State initialized');
 
-    // Process video URLs
-    const videoUrls = input.videoUrls || [];
-    const jobs = [];
+        // Initialize key-value store for progress data
+        const progressStore = await Apify.openKeyValueStore('progress-data');
+        console.log('Progress store opened');
 
-    // Generate jobs for each video
-    for (const url of videoUrls) {
-        // Extract video ID
-        const videoId = extractVideoId(url);
-        if (!videoId) {
-            console.log(`Could not extract video ID from URL: ${url}`);
-            continue;
+        // Set up proxy configuration
+        let proxyConfiguration = null;
+        if (input.useProxies) {
+            const proxyGroups = input.proxyGroups || ['RESIDENTIAL'];
+            const proxyCountry = input.proxyCountry || 'US';
+            
+            console.log(`Setting up Apify Proxy with groups: ${proxyGroups.join(', ')}, country: ${proxyCountry}`);
+            
+            try {
+                proxyConfiguration = await Apify.createProxyConfiguration({
+                    groups: proxyGroups,
+                    countryCode: proxyCountry
+                });
+                console.log('Proxy configuration created successfully');
+            } catch (error) {
+                console.error('Error creating proxy configuration:', error);
+                console.log('Continuing without proxies');
+            }
+        } else {
+            console.log('Proxies disabled in input, continuing without proxies');
         }
 
-        // Create job
-        const job = {
-            id: uuidv4(),
-            url,
-            videoId,
-            platform: url.includes('youtube.com') || url.includes('youtu.be') ? 'youtube' : 'rumble',
-            video_info: {
-                watchTime: input.watchTimePercentage
-            },
-            engagement: {
-                enabled: input.enableEngagement || false,
-                like: input.performLike || false,
-                comment: input.leaveComment || false,
-                commentText: input.commentText || '',
-                subscribe: input.subscribeToChannel || false
+        // Initialize proxy state tracking
+        const proxyState = {
+            usedProxies: new Map(), // Maps video IDs to proxy URLs
+            proxyPerformance: new Map(), // Maps proxy URLs to performance metrics
+            currentProxyUrl: null,
+            proxyTestResults: {
+                total: 0,
+                working: 0,
+                failed: 0
             }
         };
+        
+        console.log('Proxy state initialized');
 
-        jobs.push(job);
-        console.log(`Generated job for video ${videoId}`);
-    }
-
-    // Update state with total jobs
-    state.totalJobs = jobs.length;
-    await updateProgressData(state, progressStore);
-
-    console.log(`Generated ${jobs.length} jobs for video URLs`);
-
-    // Process jobs with concurrency control
-    const concurrency = input.concurrency || 1;
-    const concurrencyInterval = input.concurrencyInterval || 1;
-
-    let activeWorkers = 0;
-    let completedJobs = 0;
-
-    // Process jobs
-    for (const job of jobs) {
-        // Wait if at concurrency limit
-        while (activeWorkers >= concurrency) {
-            await new Promise(resolve => setTimeout(resolve, 1000));
+        // Test proxies if enabled
+        if (input.useProxies && !input.disableProxyTests && proxyConfiguration) {
+            console.log('Testing proxies...');
+            await testProxies(proxyConfiguration, proxyState, input);
         }
 
-        // Start worker
-        activeWorkers++;
-        const workerId = uuidv4();
-        console.log(`Starting worker ${workerId} for job ${job.id}`);
+        // Process video URLs
+        const videoUrls = input.videoUrls || [];
+        const jobs = [];
 
-        // Track job start
-        trackJobStart(state, job);
+        // Generate jobs for each video
+        for (const url of videoUrls) {
+            // Extract video ID
+            const videoId = extractVideoId(url);
+            if (!videoId) {
+                console.log(`Could not extract video ID from URL: ${url}`);
+                continue;
+            }
+
+            // Create job
+            const job = {
+                id: uuidv4(),
+                url,
+                videoId,
+                platform: url.includes('youtube.com') || url.includes('youtu.be') ? 'youtube' : 'rumble',
+                video_info: {
+                    watchTime: input.watchTimePercentage
+                },
+                engagement: {
+                    enabled: input.enableEngagement || false,
+                    like: input.performLike || false,
+                    comment: input.leaveComment || false,
+                    commentText: input.commentText || '',
+                    subscribe: input.subscribeToChannel || false
+                }
+            };
+
+            jobs.push(job);
+            console.log(`Generated job for video ${videoId}`);
+        }
+
+        // Update state with total jobs
+        state.totalJobs = jobs.length;
         await updateProgressData(state, progressStore);
 
-        // Process job in background
-        processJob(job, workerId, input, proxyConfiguration, proxyState, state, progressStore).then(() => {
-            activeWorkers--;
-            completedJobs++;
-            console.log(`Worker ${workerId} finished. Progress: ${completedJobs}/${jobs.length}`);
+        console.log(`Generated ${jobs.length} jobs for video URLs`);
 
-            // Check if all jobs are done
-            if (completedJobs === jobs.length) {
-                console.log('All workers finished');
+        // Process jobs with concurrency control
+        const concurrency = input.concurrency || 1;
+        const concurrencyInterval = input.concurrencyInterval || 1;
+
+        let activeWorkers = 0;
+        let completedJobs = 0;
+
+        console.log(`Starting job processing with concurrency: ${concurrency}, interval: ${concurrencyInterval}s`);
+
+        // Process jobs
+        for (const job of jobs) {
+            // Wait if at concurrency limit
+            while (activeWorkers >= concurrency) {
+                console.log(`Waiting for worker slot (active: ${activeWorkers}/${concurrency})`);
+                await new Promise(resolve => setTimeout(resolve, 1000));
             }
-        }).catch(error => {
-            activeWorkers--;
-            completedJobs++;
-            console.log(`Worker ${workerId} failed: ${error.message}`);
 
-            // Track job failure
-            trackJobFailure(state, job, error);
-            updateProgressData(state, progressStore);
+            // Start worker
+            activeWorkers++;
+            const workerId = uuidv4();
+            console.log(`Starting worker ${workerId} for job ${job.id}`);
 
-            // Check if all jobs are done
-            if (completedJobs === jobs.length) {
-                console.log('All workers finished');
+            // Track job start
+            trackJobStart(state, job);
+            await updateProgressData(state, progressStore);
+
+            // Process job in background
+            processJob(job, workerId, input, proxyConfiguration, proxyState, state, progressStore).then(() => {
+                activeWorkers--;
+                completedJobs++;
+                console.log(`Worker ${workerId} finished. Progress: ${completedJobs}/${jobs.length}`);
+
+                // Check if all jobs are done
+                if (completedJobs === jobs.length) {
+                    console.log('All workers finished');
+                }
+            }).catch(error => {
+                activeWorkers--;
+                completedJobs++;
+                console.log(`Worker ${workerId} failed: ${error.message}`);
+
+                // Track job failure
+                trackJobFailure(state, job, error);
+                updateProgressData(state, progressStore);
+
+                // Check if all jobs are done
+                if (completedJobs === jobs.length) {
+                    console.log('All workers finished');
+                }
+            });
+
+            // Wait between spawning workers
+            if (concurrencyInterval > 0) {
+                console.log(`Waiting ${concurrencyInterval}s before starting next worker`);
+                await new Promise(resolve => setTimeout(resolve, concurrencyInterval * 1000));
+            }
+        }
+
+        console.log(`All jobs started, waiting for completion (${jobs.length} total jobs)`);
+
+        // Wait for all jobs to complete
+        while (completedJobs < jobs.length) {
+            console.log(`Waiting for job completion: ${completedJobs}/${jobs.length} done`);
+            await new Promise(resolve => setTimeout(resolve, 3000));
+        }
+
+        // Final progress update
+        await updateProgressData(state, progressStore);
+
+        console.log(`Completed ${jobs.length} jobs. Actor execution finished.`);
+        
+        // Push final summary to dataset
+        await Apify.pushData({
+            status: 'completed',
+            summary: {
+                totalJobs: jobs.length,
+                completedJobs: state.completedJobs,
+                failedJobs: state.failedJobs,
+                runtime: Math.round((Date.now() - state.startTime) / 1000)
             }
         });
-
-        // Wait between spawning workers
-        if (concurrencyInterval > 0) {
-            await new Promise(resolve => setTimeout(resolve, concurrencyInterval * 1000));
-        }
+        
+    } catch (error) {
+        console.error('Unhandled error in actor main function:', error);
+        
+        // Report error to Apify
+        await Apify.pushData({
+            status: 'error',
+            error: error.message,
+            stack: error.stack
+        });
     }
-
-    // Wait for all jobs to complete
-    while (completedJobs < jobs.length) {
-        await new Promise(resolve => setTimeout(resolve, 3000));
-    }
-
-    // Final progress update
-    await updateProgressData(state, progressStore);
-
-    console.log(`Completed ${jobs.length} jobs`);
 };
 
 /**
@@ -183,13 +248,26 @@ async function processJob(job, workerId, settings, proxyConfiguration, proxyStat
         console.log(`Starting worker for job ${job.id}, video ${job.videoId}`);
 
         // Get proxy for this video
-        const proxyUrl = await getProxyForVideo(proxyConfiguration, proxyState, job.videoId, settings);
+        let proxyUrl = null;
+        try {
+            proxyUrl = await getProxyForVideo(proxyConfiguration, proxyState, job.videoId, settings);
+        } catch (error) {
+            console.log(`Error getting proxy, continuing without proxy: ${error.message}`);
+        }
 
-        // Launch browser
-        const browser = await chromium.launch({
-            headless: settings.headless !== false,
-            proxy: proxyUrl ? { server: proxyUrl } : undefined
-        });
+        // Launch browser with error handling
+        let browser;
+        try {
+            console.log('Launching browser...');
+            browser = await chromium.launch({
+                headless: settings.headless !== false,
+                proxy: proxyUrl ? { server: proxyUrl } : undefined
+            });
+            console.log('Browser launched successfully');
+        } catch (error) {
+            console.error(`Error launching browser: ${error.message}`);
+            throw new Error(`Failed to launch browser: ${error.message}`);
+        }
 
         // Create context and page
         const context = await browser.newContext({
@@ -198,6 +276,7 @@ async function processJob(job, workerId, settings, proxyConfiguration, proxyStat
         });
 
         const page = await context.newPage();
+        console.log('Browser page created');
 
         // Apply anti-detection measures
         await applyAntiDetectionMeasures(page, settings);
@@ -232,6 +311,7 @@ async function processJob(job, workerId, settings, proxyConfiguration, proxyStat
 
         // Close browser
         await browser.close();
+        console.log('Browser closed');
 
         // Record proxy performance
         if (proxyUrl) {
@@ -280,11 +360,13 @@ async function handleYouTubeVideo(page, job, worker, settings, state, progressSt
         // Navigate to video with improved wait conditions
         await page.goto(`https://www.youtube.com/watch?v=${job.videoId}`, { 
             waitUntil: 'domcontentloaded',
-            timeout: settings.timeout * 1000
+            timeout: settings.timeout * 1000 || 120000
         });
+        console.log('Page loaded');
         
         // Wait for video player to load with increased reliability
         await page.waitForSelector('video', { timeout: 60000 });
+        console.log('Video player found');
         
         // More reliable video duration detection with retry mechanism
         const videoDuration = await getVideoDurationWithRetry(page, 3);
@@ -299,7 +381,7 @@ async function handleYouTubeVideo(page, job, worker, settings, state, progressSt
         console.log(`Video duration: ${videoDuration} seconds`);
         
         // Calculate watch time based on percentage with minimum threshold
-        const watchTimePercentage = job.video_info.watchTime || settings.watchTimePercentage;
+        const watchTimePercentage = job.video_info.watchTime || settings.watchTimePercentage || 80;
         const watchTimeSeconds = Math.max(
             Math.floor(videoDuration * (watchTimePercentage / 100)),
             Math.min(30, videoDuration) // At least 30 seconds or full video if shorter
@@ -310,6 +392,7 @@ async function handleYouTubeVideo(page, job, worker, settings, state, progressSt
         
         // Ensure video is playing
         await ensureVideoIsPlaying(page);
+        console.log('Video playback started');
         
         // Handle ads with improved detection and skipping
         const adCheckInterval = setInterval(async () => {
@@ -409,11 +492,13 @@ async function handleRumbleVideo(page, job, worker, settings, state, progressSto
         // Navigate to video
         await page.goto(job.url, { 
             waitUntil: 'domcontentloaded',
-            timeout: settings.timeout * 1000
+            timeout: settings.timeout * 1000 || 120000
         });
+        console.log('Rumble page loaded');
         
         // Wait for video player to load
         await page.waitForSelector('video', { timeout: 60000 });
+        console.log('Rumble video player found');
         
         // Get video duration
         const videoDuration = await getVideoDurationWithRetry(page, 3);
@@ -428,7 +513,7 @@ async function handleRumbleVideo(page, job, worker, settings, state, progressSto
         console.log(`Rumble video duration: ${videoDuration} seconds`);
         
         // Calculate watch time based on percentage with minimum threshold
-        const watchTimePercentage = job.video_info.watchTime || settings.watchTimePercentage;
+        const watchTimePercentage = job.video_info.watchTime || settings.watchTimePercentage || 80;
         const watchTimeSeconds = Math.max(
             Math.floor(videoDuration * (watchTimePercentage / 100)),
             Math.min(30, videoDuration) // At least 30 seconds or full video if shorter
@@ -439,6 +524,7 @@ async function handleRumbleVideo(page, job, worker, settings, state, progressSto
         
         // Ensure video is playing
         await ensureVideoIsPlaying(page);
+        console.log('Rumble video playback started');
         
         // Set up progress reporting
         const progressInterval = setInterval(async () => {
@@ -654,7 +740,7 @@ async function handleAds(page, worker, settings) {
             // Wait for skip button with timeout
             try {
                 await page.waitForSelector('.ytp-ad-skip-button', { 
-                    timeout: Math.min(settings.maxSecondsAds * 1000, 30000)
+                    timeout: Math.min(settings.maxSecondsAds * 1000 || 15000, 30000)
                 });
                 
                 // Click skip button
@@ -1024,7 +1110,7 @@ async function performYouTubeEngagement(page, job, worker, settings) {
     }
     
     // Calculate watch time
-    const watchTimePercentage = job.video_info.watchTime || settings.watchTimePercentage;
+    const watchTimePercentage = job.video_info.watchTime || settings.watchTimePercentage || 80;
     const watchTimeSeconds = Math.floor(videoDuration * (watchTimePercentage / 100));
     
     // Set up engagement actions with randomized timing
@@ -1349,7 +1435,7 @@ async function performRumbleEngagement(page, job, worker, settings) {
     }
     
     // Calculate watch time
-    const watchTimePercentage = job.video_info.watchTime || settings.watchTimePercentage;
+    const watchTimePercentage = job.video_info.watchTime || settings.watchTimePercentage || 80;
     const watchTimeSeconds = Math.floor(videoDuration * (watchTimePercentage / 100));
     
     // Set up engagement actions with randomized timing
@@ -1598,9 +1684,14 @@ async function testProxies(proxyConfiguration, proxyState, settings) {
     
     // Generate test proxies
     const proxyUrls = [];
-    for (let i = 0; i < testCount; i++) {
-        const proxyUrl = await proxyConfiguration.newUrl();
-        proxyUrls.push(proxyUrl);
+    try {
+        for (let i = 0; i < testCount; i++) {
+            const proxyUrl = await proxyConfiguration.newUrl();
+            proxyUrls.push(proxyUrl);
+        }
+    } catch (error) {
+        console.error(`Error generating proxy URLs: ${error.message}`);
+        return [];
     }
     
     // Update state
@@ -2042,3 +2133,4 @@ function getRandomUserAgent() {
     // Select random user agent
     return userAgents[Math.floor(Math.random() * userAgents.length)];
 }
+

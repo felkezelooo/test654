@@ -1,15 +1,14 @@
 {
-    "title": "YouTube & Rumble View Bot",
-    "description": "Boost views on YouTube and Rumble videos using residential proxies with country selection",
+    "title": "YouTube & Rumble View Bot (Minimal Schema Test)",
+    "description": "Test schema for objectList.",
     "type": "object",
     "schemaVersion": 1,
     "properties": {
         "videosToWatch": {
             "title": "Videos to Watch",
             "type": "array",
-            "description": "List of videos to process. Each video can have its own settings.",
+            "description": "List of video URLs to process.",
             "editor": "objectList",
-            "sectionCaption": "Video Task",
             "items": {
                 "type": "object",
                 "properties": {
@@ -18,135 +17,28 @@
                         "type": "string",
                         "description": "YouTube or Rumble video URL",
                         "editor": "textfield"
-                    },
-                    "watchType": {
-                        "title": "Watch Type",
-                        "type": "string",
-                        "description": "How to reach the video.",
-                        "default": "direct",
-                        "enum": ["direct", "referer", "search"],
-                        "enumTitles": ["Direct Visit", "Via Referer", "Via Search"]
-                    },
-                    "refererUrl": {
-                        "title": "Referer URL (if Watch Type is 'referer')",
-                        "type": "string",
-                        "description": "The URL to set as the referer. Only used if Watch Type is 'referer'.",
-                        "editor": "textfield"
-                        
-                    },
-                    "searchKeywords": {
-                        "title": "Search Keywords (if Watch Type is 'search')",
-                        "type": "array",
-                        "description": "Keywords to search for. One will be chosen randomly. Video must be findable with these. Only used if Watch Type is 'search'.",
-                        "editor": "stringList"
-                        
                     }
                 },
                 "required": ["url"]
             },
-            "prefill": [
-                { "url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ", "watchType": "direct", "refererUrl": "", "searchKeywords": [] },
-                { "url": "https://www.youtube.com/watch?v=anotherVideo", "watchType": "referer", "refererUrl": "https://www.twitter.com/", "searchKeywords": []},
-                { "url": "https://rumble.com/v2j3hyu-example-video.html", "watchType": "search", "searchKeywords": ["example video rumble"], "refererUrl": ""}
+            "default": [
+                { "url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ" }
             ]
         },
         "watchTimePercentage": {
             "title": "Watch Time Percentage",
             "type": "integer",
-            "description": "Percentage of the video to watch (30-100)",
-            "minimum": 30,
-            "maximum": 100,
             "default": 80
-        },
-        "useProxies": {
-            "title": "Use Proxies",
-            "type": "boolean",
-            "description": "Whether to use proxies for viewing videos",
-            "default": true
-        },
-        "proxyUrls": {
-            "title": "Custom Proxy URLs",
-            "type": "array",
-            "description": "Optional list of custom proxy URLs (in addition to Apify Proxy)",
-            "editor": "stringList"
-        },
-        "proxyCountry": {
-            "title": "Proxy Country",
-            "type": "string",
-            "description": "Country code for Apify residential proxies (e.g., US, GB, DE)",
-            "editor": "select",
-            "enum": ["", "US", "GB", "DE", "FR", "JP", "CA", "AU", "BR", "IN", "IT", "ES", "NL", "SE", "SG"],
-            "enumTitles": ["Any country", "United States", "United Kingdom", "Germany", "France", "Japan", "Canada", "Australia", "Brazil", "India", "Italy", "Spain", "Netherlands", "Sweden", "Singapore"]
-        },
-        "proxyGroups": {
-            "title": "Proxy Groups",
-            "type": "array",
-            "description": "Apify proxy groups to use",
-            "editor": "stringList",
-            "default": ["RESIDENTIAL"]
         },
         "headless": {
             "title": "Headless Mode",
             "type": "boolean",
-            "description": "Run browsers in headless mode",
-            "default": false 
+            "default": true
         },
         "concurrency": {
             "title": "Concurrency",
             "type": "integer",
-            "description": "Number of concurrent browser instances",
-            "minimum": 1,
-            "maximum": 100,
-            "default": 1 
-        },
-        "concurrencyInterval": {
-            "title": "Concurrency Interval (seconds)",
-            "type": "integer",
-            "description": "Interval in seconds between starting new browser instances",
-            "minimum": 1,
-            "maximum": 60,
-            "default": 5
-        },
-        "timeout": {
-            "title": "Page Navigation Timeout (seconds)",
-            "type": "integer",
-            "description": "Maximum time for page navigation (goto)",
-            "minimum": 30,
-            "maximum": 300,
-            "default": 120
-        },
-        "maxSecondsAds": {
-            "title": "Max Seconds for Ads",
-            "type": "integer",
-            "description": "Maximum seconds to watch an ad before attempting to skip",
-            "minimum": 0,
-            "maximum": 120,
-            "default": 15
-        },
-        "skipAdsAfter": {
-            "title": "Min Ad Watch Time before Skip (seconds, comma-separated if range)",
-            "type": "array",
-            "description": "Attempt to skip ads after this many seconds (if skippable). Use one value or two for a random range.",
-            "editor": "stringList",
-            "default": ["5", "10"]
-        },
-        "autoSkipAds": {
-            "title": "Auto Skip Ads",
-            "type": "boolean",
-            "description": "Automatically skip ads when the skip button becomes available",
-            "default": true
-        },
-        "stopSpawningOnOverload": {
-            "title": "Stop Spawning on Overload",
-            "type": "boolean",
-            "description": "Stop spawning new instances if system (or Apify platform) is at capacity",
-            "default": true
-        },
-        "useAV1": {
-            "title": "Use AV1 Codec (Experimental)",
-            "type": "boolean",
-            "description": "Attempt to use AV1 video codec if available (browser support varies)",
-            "default": false
+            "default": 1
         }
     },
     "required": ["videosToWatch"]

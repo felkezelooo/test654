@@ -1,12 +1,12 @@
 const Apify = require('apify');
 
-// Simple test script that only focuses on input retrieval and logging
-console.log('Starting YouTube & Rumble View Bot Actor - Input Test Version');
+// Log that the script has started
+console.log('Starting YouTube & Rumble View Bot Actor - Self-Invoking Version');
 
-// Replace Apify.main with module.exports for compatibility with all Apify SDK versions
-module.exports = async () => {
+// Self-invoking async function that runs immediately
+(async () => {
     try {
-        console.log('Actor main function started');
+        console.log('Self-invoking function started');
         
         // Try different methods to get input
         console.log('Attempting to get input using Apify.getInput()...');
@@ -104,7 +104,12 @@ module.exports = async () => {
         
         console.log('Error data pushed, exiting actor due to unhandled error');
     }
+})();
+
+// Also export as module.exports for compatibility
+module.exports = async () => {
+    console.log('Module exports function called - this is a fallback and should not be the primary execution path');
 };
 
-// Log that the script has been loaded and is ready to execute
-console.log('Input test script loaded and ready to execute');
+// Log that the script has been loaded
+console.log('Self-invoking script loaded and ready to execute');

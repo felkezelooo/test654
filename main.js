@@ -33,8 +33,7 @@ const ANTI_DETECTION_ARGS = [
     '--ignore-certificate-errors',
 ];
 
-// GlobalLogger will be initialized after Actor.init()
-let GlobalLogger; // Declare, but assign after Actor.init()
+let GlobalLogger; // Declare, will be assigned after Actor.init()
 
 async function applyAntiDetectionScripts(pageOrContext) {
     const script = () => {
@@ -49,7 +48,7 @@ async function applyAntiDetectionScripts(pageOrContext) {
                 if (parameter === 37446) return 'ANGLE (Intel, Intel(R) Iris(TM) Plus Graphics 640, OpenGL 4.1)';
                 return originalGetParameter.apply(this, arguments);
             };
-        } catch (e) { if (GlobalLogger) GlobalLogger.debug('Failed WebGL spoof:', e.message); else console.warn('Failed WebGL spoof:', e.message); }
+        } catch (e) { (GlobalLogger || console).debug('Failed WebGL spoof:', e.message); }
         try {
             const originalToDataURL = HTMLCanvasElement.prototype.toDataURL;
             HTMLCanvasElement.prototype.toDataURL = function() {
@@ -66,11 +65,11 @@ async function applyAntiDetectionScripts(pageOrContext) {
                             imageData.data[i+3] = Math.min(255,Math.max(0,imageData.data[i+3]+shift.a));
                         }
                         ctx.putImageData(imageData,0,0);
-                    } catch(e) { if (GlobalLogger) GlobalLogger.debug('Failed Canvas noise:', e.message); else console.warn('Failed Canvas noise:', e.message); }
+                    } catch(e) { (GlobalLogger || console).debug('Failed Canvas noise:', e.message); }
                 }
                 return originalToDataURL.apply(this, arguments);
             };
-        } catch (e) { if (GlobalLogger) GlobalLogger.debug('Failed Canvas spoof:', e.message); else console.warn('Failed Canvas spoof:', e.message); }
+        } catch (e) { (GlobalLogger || console).debug('Failed Canvas spoof:', e.message); }
         if (navigator.permissions && typeof navigator.permissions.query === 'function') {
             const originalPermissionsQuery = navigator.permissions.query;
             navigator.permissions.query = (parameters) => ( parameters.name === 'notifications' ? Promise.resolve({ state: Notification.permission || 'prompt' }) : originalPermissionsQuery.call(navigator.permissions, parameters) );
@@ -83,11 +82,11 @@ async function applyAntiDetectionScripts(pageOrContext) {
                 Object.defineProperty(window.screen, 'height', { get: () => 1080, configurable: true });
                 Object.defineProperty(window.screen, 'colorDepth', { get: () => 24, configurable: true });
                 Object.defineProperty(window.screen, 'pixelDepth', { get: () => 24, configurable: true });
-            } catch (e) { if (GlobalLogger) GlobalLogger.debug('Failed screen spoof:', e.message); else console.warn('Failed screen spoof:', e.message); }
+            } catch (e) { (GlobalLogger || console).debug('Failed screen spoof:', e.message); }
         }
-        try { Date.prototype.getTimezoneOffset = function() { return 5 * 60; }; } catch (e) { if (GlobalLogger) GlobalLogger.debug('Failed timezone spoof:', e.message); else console.warn('Failed timezone spoof:', e.message); }
-        if (navigator.plugins) try { Object.defineProperty(navigator, 'plugins', { get: () => [], configurable: true }); } catch(e) { if (GlobalLogger) GlobalLogger.debug('Failed plugin spoof:', e.message); else console.warn('Failed plugin spoof:', e.message); }
-        if (navigator.mimeTypes) try { Object.defineProperty(navigator, 'mimeTypes', { get: () => [], configurable: true }); } catch(e) { if (GlobalLogger) GlobalLogger.debug('Failed mimeType spoof:', e.message); else console.warn('Failed mimeType spoof:', e.message); }
+        try { Date.prototype.getTimezoneOffset = function() { return 5 * 60; }; } catch (e) { (GlobalLogger || console).debug('Failed timezone spoof:', e.message); }
+        if (navigator.plugins) try { Object.defineProperty(navigator, 'plugins', { get: () => [], configurable: true }); } catch(e) { (GlobalLogger || console).debug('Failed plugin spoof:', e.message); }
+        if (navigator.mimeTypes) try { Object.defineProperty(navigator, 'mimeTypes', { get: () => [], configurable: true }); } catch(e) { (GlobalLogger || console).debug('Failed mimeType spoof:', e.message); }
     };
     if (pageOrContext.addInitScript) await pageOrContext.addInitScript(script);
     else await pageOrContext.evaluateOnNewDocument(script);
@@ -206,23 +205,23 @@ async function handleAds(page, platform, effectiveInput) {
     (GlobalLogger || console).info('Ad handling finished or timed out.');
 }
 
-async function watchVideoOnPage(page, platform, job, effectiveInput) {
+async function watchVideoOnPage(page, job, effectiveInput) { // Removed platform from args, use job.platform
     const jobResult = {
-        jobId: job.id, url: job.url, videoId: job.videoId, platform, status: 'pending',
+        jobId: job.id, url: job.url, videoId: job.videoId, platform: job.platform, status: 'pending',
         watchTimeRequestedSec: 0, watchTimeActualSec: 0, durationFoundSec: null,
         startTime: new Date().toISOString(), endTime: null, error: null, log: []
     };
     const logEntry = (msg, level = 'info') => {
         const formattedMessage = `[Job ${job.id.substring(0,6)}] ${msg}`;
-        (GlobalLogger || console)[level](formattedMessage); // Use GlobalLogger or console
+        (GlobalLogger || console)[level](formattedMessage); 
         jobResult.log.push(`[${new Date().toISOString()}] [${level.toUpperCase()}] ${msg}`);
     };
 
     try {
         logEntry('Handling initial ads.');
-        await handleAds(page, platform, effectiveInput);
+        await handleAds(page, job.platform, effectiveInput);
         logEntry(`Attempting to play video: ${job.url}`);
-        let playButtonSelectors = platform === 'youtube' 
+        let playButtonSelectors = job.platform === 'youtube' 
             ? ['.ytp-large-play-button', '.ytp-play-button[aria-label*="Play"]', 'video.html5-main-video']
             : ['.rumbles-player-play-button', 'video.rumble-player-video'];
         
@@ -251,7 +250,7 @@ async function watchVideoOnPage(page, platform, job, effectiveInput) {
 
         for (let i = 0; i < maxWatchLoops; i++) {
             logEntry(`Watch loop ${i+1}/${maxWatchLoops}. Ads check.`);
-            await handleAds(page, platform, effectiveInput);
+            await handleAds(page, job.platform, effectiveInput);
             const videoState = await page.evaluate(() => { const v = document.querySelector('video'); return v ? { ct:v.currentTime, p:v.paused, e:v.ended, rs:v.readyState, ns:v.networkState } : null; }).catch(e => { logEntry(`Video state error: ${e.message}`, 'warn'); return null; });
             if (!videoState) throw new Error('Video element disappeared.');
             logEntry(`State: time=${videoState.ct?.toFixed(2)}, paused=${videoState.p}, ended=${videoState.e}, ready=${videoState.rs}, net=${videoState.ns}`);
@@ -325,11 +324,13 @@ async function runSingleJob(job, effectiveInput, actorProxyConfiguration, custom
         }
         
         logEntry('Attempting to launch browser...');
+        // Use ApifyModule.Actor.launchPlaywright if it's specifically the Apify platform context
+        // otherwise, use the direct playwright import.
         if (ApifyModule.Actor.isApify && ApifyModule.Actor.launchPlaywright && typeof ApifyModule.Actor.launchPlaywright === 'function') {
             logEntry('Using ApifyModule.Actor.launchPlaywright.');
             browser = await ApifyModule.Actor.launchPlaywright(launchOptions);
         } else {
-            logEntry('ApifyModule.Actor.launchPlaywright not available. Using playwright.chromium.launch directly.');
+            logEntry('ApifyModule.Actor.launchPlaywright not available or not on Apify platform. Using playwright.chromium.launch directly.');
             browser = await playwright.chromium.launch(launchOptions);
         }
         logEntry('Browser launched.');
@@ -347,7 +348,7 @@ async function runSingleJob(job, effectiveInput, actorProxyConfiguration, custom
         await page.goto(job.url, { timeout: effectiveInput.timeout * 1000, waitUntil: 'networkidle' });
         logEntry(`Navigation to ${job.url} (networkidle) complete.`);
 
-        if (job.platform === 'youtube') {
+        if (job.platform === 'youtube') { // Use job.platform here
             logEntry('Checking for YouTube consent dialog...');
             const consentFrameSelectors = ['iframe[src*="consent.google.com"]', 'iframe[src*="consent.youtube.com"]'];
             let consentFrame;
@@ -394,7 +395,8 @@ async function runSingleJob(job, effectiveInput, actorProxyConfiguration, custom
             }
         } else { /* Generic consent for Rumble or others */ }
         
-        const playerSelector = platform === 'youtube' ? '#movie_player video.html5-main-video, ytd-player video' : '.rumble-player-video-wrapper video, video.rumble-player';
+        // FIX: Use job.platform instead of undefined 'platform'
+        const playerSelector = job.platform === 'youtube' ? '#movie_player video.html5-main-video, ytd-player video' : '.rumble-player-video-wrapper video, video.rumble-player';
         try {
             logEntry(`Waiting for player element (${playerSelector}) to be visible.`);
             await page.waitForSelector(playerSelector, { state: 'visible', timeout: 60000 });
@@ -406,7 +408,7 @@ async function runSingleJob(job, effectiveInput, actorProxyConfiguration, custom
             throw new Error(`Player element not visible after 60s: ${videoWaitError.message}`);
         }
 
-        const watchResult = await watchVideoOnPage(page, job.platform, job, effectiveInput);
+        const watchResult = await watchVideoOnPage(page, job, effectiveInput); // Pass job here
         Object.assign(jobResult, watchResult);
     } catch (e) {
         logEntry(`Critical error in job ${job.url}: ${e.message}\n${e.stack}`, 'error');
@@ -434,7 +436,7 @@ async function actorMainLogic() {
         GlobalLogger = ApifyModule.utils.log;
     } else {
         console.error('ACTOR_MAIN_LOGIC: Neither ApifyModule.Actor.log nor ApifyModule.utils.log is available. Re-assigning console fallback for GlobalLogger.');
-        GlobalLogger = { // Ensure GlobalLogger is assigned
+        GlobalLogger = { 
             info: (message, data) => console.log(`CONSOLE_INFO: ${message}`, data || ''),
             warning: (message, data) => console.warn(`CONSOLE_WARN: ${message}`, data || ''),
             error: (message, data) => console.error(`CONSOLE_ERROR: ${message}`, data || ''),

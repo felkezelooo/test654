@@ -1,139 +1,153 @@
 {
-  "title": "YouTube & Rumble View Bot",
-  "type": "object",
-  "schemaVersion": 1,
-  "properties": {
-    "videoUrls": {
-      "title": "Video URLs",
-      "type": "array",
-      "description": "List of YouTube or Rumble video URLs to watch",
-      "editor": "stringList",
-      "prefill": ["https://www.youtube.com/watch?v=example"]
+    "title": "YouTube & Rumble View Bot",
+    "description": "Boost views on YouTube and Rumble videos using residential proxies with country selection",
+    "type": "object",
+    "schemaVersion": 1,
+    "properties": {
+        "videosToWatch": {
+            "title": "Videos to Watch",
+            "type": "array",
+            "description": "List of videos to process. Each video can have its own settings.",
+            "editor": "objectList",
+            "objectSchema": {
+                "title": "Video Task",
+                "type": "object",
+                "properties": {
+                    "url": {
+                        "title": "Video URL",
+                        "type": "string",
+                        "description": "YouTube or Rumble video URL",
+                        "editor": "textfield"
+                    },
+                    "watchType": {
+                        "title": "Watch Type",
+                        "type": "string",
+                        "description": "How to reach the video.",
+                        "default": "direct",
+                        "enum": ["direct", "referer", "search"],
+                        "enumTitles": ["Direct Visit", "Via Referer", "Via Search"]
+                    },
+                    "refererUrl": {
+                        "title": "Referer URL (if Watch Type is 'referer')",
+                        "type": "string",
+                        "description": "The URL to set as the referer. Only used if Watch Type is 'referer'.",
+                        "editor": "textfield",
+                        "prefill": "https://www.google.com/"
+                    },
+                    "searchKeywords": {
+                        "title": "Search Keywords (if Watch Type is 'search')",
+                        "type": "array",
+                        "description": "Keywords to search for. One will be chosen randomly. Video must be findable with these. Only used if Watch Type is 'search'.",
+                        "editor": "stringList",
+                        "prefill": ["funny cat videos"]
+                    }
+                },
+                "required": ["url"]
+            },
+            "prefill": [
+                { "url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ", "watchType": "direct" },
+                { "url": "https://www.youtube.com/watch?v=anotherVideo", "watchType": "referer", "refererUrl": "https://www.twitter.com/"},
+                { "url": "https://rumble.com/v2j3hyu-example-video.html", "watchType": "search", "searchKeywords": ["example video rumble"]}
+            ]
+        },
+        "watchTimePercentage": {
+            "title": "Watch Time Percentage",
+            "type": "integer",
+            "description": "Percentage of the video to watch (30-100)",
+            "minimum": 30,
+            "maximum": 100,
+            "default": 80
+        },
+        "useProxies": {
+            "title": "Use Proxies",
+            "type": "boolean",
+            "description": "Whether to use proxies for viewing videos",
+            "default": true
+        },
+        "proxyUrls": {
+            "title": "Custom Proxy URLs",
+            "type": "array",
+            "description": "Optional list of custom proxy URLs (in addition to Apify Proxy)",
+            "editor": "stringList"
+        },
+        "proxyCountry": {
+            "title": "Proxy Country",
+            "type": "string",
+            "description": "Country code for Apify residential proxies (e.g., US, GB, DE)",
+            "editor": "select",
+            "enum": ["", "US", "GB", "DE", "FR", "JP", "CA", "AU", "BR", "IN", "IT", "ES", "NL", "SE", "SG"],
+            "enumTitles": ["Any country", "United States", "United Kingdom", "Germany", "France", "Japan", "Canada", "Australia", "Brazil", "India", "Italy", "Spain", "Netherlands", "Sweden", "Singapore"]
+        },
+        "proxyGroups": {
+            "title": "Proxy Groups",
+            "type": "array",
+            "description": "Apify proxy groups to use",
+            "editor": "stringList",
+            "default": ["RESIDENTIAL"]
+        },
+        "headless": {
+            "title": "Headless Mode",
+            "type": "boolean",
+            "description": "Run browsers in headless mode",
+            "default": false 
+        },
+        "concurrency": {
+            "title": "Concurrency",
+            "type": "integer",
+            "description": "Number of concurrent browser instances",
+            "minimum": 1,
+            "maximum": 100,
+            "default": 1 
+        },
+        "concurrencyInterval": {
+            "title": "Concurrency Interval (seconds)",
+            "type": "integer",
+            "description": "Interval in seconds between starting new browser instances",
+            "minimum": 1,
+            "maximum": 60,
+            "default": 5
+        },
+        "timeout": {
+            "title": "Page Navigation Timeout (seconds)",
+            "type": "integer",
+            "description": "Maximum time for page navigation (goto)",
+            "minimum": 30,
+            "maximum": 300,
+            "default": 120
+        },
+        "maxSecondsAds": {
+            "title": "Max Seconds for Ads",
+            "type": "integer",
+            "description": "Maximum seconds to watch an ad before attempting to skip",
+            "minimum": 0,
+            "maximum": 120,
+            "default": 15
+        },
+        "skipAdsAfter": {
+            "title": "Min Ad Watch Time before Skip (seconds, comma-separated if range)",
+            "type": "array",
+            "description": "Attempt to skip ads after this many seconds (if skippable). Use one value or two for a random range.",
+            "editor": "stringList",
+            "default": ["5", "10"]
+        },
+        "autoSkipAds": {
+            "title": "Auto Skip Ads",
+            "type": "boolean",
+            "description": "Automatically skip ads when the skip button becomes available",
+            "default": true
+        },
+        "stopSpawningOnOverload": {
+            "title": "Stop Spawning on Overload",
+            "type": "boolean",
+            "description": "Stop spawning new instances if system (or Apify platform) is at capacity",
+            "default": true
+        },
+        "useAV1": {
+            "title": "Use AV1 Codec (Experimental)",
+            "type": "boolean",
+            "description": "Attempt to use AV1 video codec if available (browser support varies)",
+            "default": false
+        }
     },
-    "watchTimePercentage": {
-      "title": "Watch Time Percentage",
-      "type": "integer",
-      "description": "Percentage of video to watch (1-100)",
-      "default": 80,
-      "minimum": 1,
-      "maximum": 100
-    },
-    "useProxies": {
-      "title": "Use Proxies",
-      "type": "boolean",
-      "description": "Whether to use Apify proxies",
-      "default": true
-    },
-    "proxyCountry": {
-      "title": "Proxy Country",
-      "type": "string",
-      "description": "Country code for proxies (e.g., US, GB, DE)",
-      "default": "US",
-      "editor": "select",
-      "enum": ["US", "GB", "DE", "FR", "JP", "CA", "AU", "BR", "IN", "IT", "ES", "NL", "SE", "SG"]
-    },
-    "proxyGroups": {
-      "title": "Proxy Groups",
-      "type": "array",
-      "description": "Apify proxy groups to use",
-      "default": ["RESIDENTIAL"],
-      "editor": "stringList"
-    },
-    "disableProxyTests": {
-      "title": "Disable Proxy Tests",
-      "type": "boolean",
-      "description": "Skip testing proxies before use",
-      "default": false
-    },
-    "concurrency": {
-      "title": "Concurrency",
-      "type": "integer",
-      "description": "Number of concurrent video views",
-      "default": 1,
-      "minimum": 1
-    },
-    "concurrencyInterval": {
-      "title": "Concurrency Interval",
-      "type": "integer",
-      "description": "Seconds to wait between starting new workers",
-      "default": 1,
-      "minimum": 0
-    },
-    "headless": {
-      "title": "Headless Mode",
-      "type": "boolean",
-      "description": "Run browsers in headless mode",
-      "default": true
-    },
-    "timeout": {
-      "title": "Timeout",
-      "type": "integer",
-      "description": "Maximum seconds to wait for page load",
-      "default": 120,
-      "minimum": 30
-    },
-    "autoSkipAds": {
-      "title": "Auto Skip Ads",
-      "type": "boolean",
-      "description": "Automatically skip ads when possible",
-      "default": true
-    },
-    "maxSecondsAds": {
-      "title": "Max Seconds for Ads",
-      "type": "integer",
-      "description": "Maximum seconds to wait for ad to finish",
-      "default": 15,
-      "minimum": 0
-    },
-    "skipAdsAfter": {
-      "title": "Skip Ads After",
-      "type": "array",
-      "description": "Skip ads after these many seconds if skip button doesn't appear",
-      "default": ["5", "10"],
-      "editor": "stringList"
-    },
-    "useAV1": {
-      "title": "Use AV1 Codec",
-      "type": "boolean",
-      "description": "Use AV1 codec for video playback when available",
-      "default": true
-    },
-    "stopSpawningOnOverload": {
-      "title": "Stop Spawning on Overload",
-      "type": "boolean",
-      "description": "Stop spawning new workers if system is overloaded",
-      "default": true
-    },
-    "enableEngagement": {
-      "title": "Enable Engagement Actions",
-      "type": "boolean",
-      "description": "Enable engagement actions like like, comment, subscribe",
-      "default": false
-    },
-    "performLike": {
-      "title": "Perform Like",
-      "type": "boolean",
-      "description": "Like videos during watching",
-      "default": false
-    },
-    "leaveComment": {
-      "title": "Leave Comment",
-      "type": "boolean",
-      "description": "Leave comments on videos",
-      "default": false
-    },
-    "commentText": {
-      "title": "Comment Text",
-      "type": "string",
-      "description": "Text to use for comments",
-      "editor": "textarea"
-    },
-    "subscribeToChannel": {
-      "title": "Subscribe to Channel",
-      "type": "boolean",
-      "description": "Subscribe to channels during watching",
-      "default": false
-    }
-  },
-  "required": ["videoUrls"]
+    "required": ["videosToWatch"]
 }

@@ -33,7 +33,7 @@ const ANTI_DETECTION_ARGS = [
     '--ignore-certificate-errors',
 ];
 
-let GlobalLogger; // Declare, will be assigned after Actor.init()
+let GlobalLogger; 
 
 async function applyAntiDetectionScripts(pageOrContext) {
     const script = () => {
@@ -137,7 +137,7 @@ async function clickIfExists(page, selector, timeout = 3000) {
         (GlobalLogger || console).info(`Clicked on selector: ${selector}`);
         return true;
     } catch (e) {
-        (GlobalLogger || console).debug(`Selector not found or not clickable within ${timeout}ms: ${selector} - Error: ${e.message}`);
+        (GlobalLogger || console).debug(`Selector not found or not clickable within ${timeout}ms: ${selector} - Error: ${e.message.split('\n')[0]}`);
         return false;
     }
 }
@@ -205,7 +205,7 @@ async function handleAds(page, platform, effectiveInput) {
     (GlobalLogger || console).info('Ad handling finished or timed out.');
 }
 
-async function watchVideoOnPage(page, job, effectiveInput) { // Removed platform from args, use job.platform
+async function watchVideoOnPage(page, job, effectiveInput) {
     const jobResult = {
         jobId: job.id, url: job.url, videoId: job.videoId, platform: job.platform, status: 'pending',
         watchTimeRequestedSec: 0, watchTimeActualSec: 0, durationFoundSec: null,
@@ -226,17 +226,41 @@ async function watchVideoOnPage(page, job, effectiveInput) { // Removed platform
             : ['.rumbles-player-play-button', 'video.rumble-player-video'];
         
         let played = false;
-        for (const selector of playButtonSelectors) {
-            if (await clickIfExists(page, selector, 3000)) { played = true; logEntry(`Clicked play button: ${selector}`); break; }
+        // Try to click a known play button
+        for (let attempt = 0; attempt < 3; attempt++) {
+            for (const selector of playButtonSelectors) {
+                if (await clickIfExists(page, selector, 2000)) { // Shorter timeout for play attempts
+                    played = true;
+                    logEntry(`Clicked play button: ${selector} on attempt ${attempt + 1}`);
+                    break;
+                }
+            }
+            if (played) break;
+            logEntry(`Play button click attempt ${attempt + 1} failed, checking if video is already playing or trying general video click.`);
+            const isPaused = await page.evaluate(() => document.querySelector('video')?.paused);
+            if (isPaused === false) { // Check if it's false (meaning playing)
+                played = true;
+                logEntry('Video appears to be already playing.');
+                break;
+            }
+            if(attempt < 2) await page.waitForTimeout(1000); // Wait before retrying
         }
+
         if (!played) {
-             logEntry('No specific play button found, attempting to click video element directly.');
-             await page.locator('video').first().click({timeout: 5000, force: true}).catch(e => logEntry(`Failed to click video: ${e.message}`, 'warn'));
+             logEntry('No specific play button worked or video not auto-playing, attempting to click video element directly.');
+             await page.locator('video').first().click({timeout: 5000, force: true, trial: true}).catch(e => logEntry(`Failed to click video (trial): ${e.message}`, 'warn'));
+             const isPausedAfterGeneralClick = await page.evaluate(() => document.querySelector('video')?.paused);
+             if (isPausedAfterGeneralClick === false) {
+                logEntry('Video started playing after general video click.');
+             } else {
+                logEntry('Video still not playing after all attempts.', 'warn');
+             }
         }
-        await page.evaluate(() => { const v = document.querySelector('video'); if(v) { v.muted=false; v.volume=0.1+Math.random()*0.2; }}).catch(e => logEntry(`Unmute/volume failed: ${e.message}`, 'debug'));
+        
+        await page.evaluate(() => { const v = document.querySelector('video'); if(v) { v.muted=false; v.volume=0.05+Math.random()*0.1; }}).catch(e => logEntry(`Unmute/volume failed: ${e.message}`, 'debug'));
 
         const duration = await getVideoDuration(page);
-        if (!duration || duration <= 0) throw new Error('Could not determine valid video duration.');
+        if (!duration || duration <= 0) throw new Error('Could not determine valid video duration after multiple attempts.');
         jobResult.durationFoundSec = duration;
 
         const targetWatchTimeSec = Math.floor(duration * (effectiveInput.watchTimePercentage / 100));
@@ -257,7 +281,7 @@ async function watchVideoOnPage(page, job, effectiveInput) { // Removed platform
             if (videoState.p && !videoState.e) {
                 logEntry('Paused, trying to play.');
                 for (const sel of playButtonSelectors) if (await clickIfExists(page, sel, 2000)) break;
-                await page.locator('video').first().click({timeout:2000, force: true}).catch(e => logEntry(`Fallback click failed: ${e.message}`, 'debug'));
+                await page.locator('video').first().click({timeout:2000, force: true, trial: true}).catch(e => logEntry(`Fallback click failed: ${e.message}`, 'debug'));
             }
             currentActualWatchTime = videoState.ct || 0;
             jobResult.watchTimeActualSec = currentActualWatchTime;
@@ -324,9 +348,7 @@ async function runSingleJob(job, effectiveInput, actorProxyConfiguration, custom
         }
         
         logEntry('Attempting to launch browser...');
-        // Use ApifyModule.Actor.launchPlaywright if it's specifically the Apify platform context
-        // otherwise, use the direct playwright import.
-        if (ApifyModule.Actor.isApify && ApifyModule.Actor.launchPlaywright && typeof ApifyModule.Actor.launchPlaywright === 'function') {
+        if (ApifyModule.Actor.isApify() && ApifyModule.Actor.launchPlaywright && typeof ApifyModule.Actor.launchPlaywright === 'function') {
             logEntry('Using ApifyModule.Actor.launchPlaywright.');
             browser = await ApifyModule.Actor.launchPlaywright(launchOptions);
         } else {
@@ -344,16 +366,26 @@ async function runSingleJob(job, effectiveInput, actorProxyConfiguration, custom
         page = await context.newPage();
         await page.setViewportSize({ width: 1200 + Math.floor(Math.random()*120), height: 700 + Math.floor(Math.random()*80) });
 
-        logEntry(`Navigating to ${job.url} with waitUntil: 'networkidle' (timeout ${effectiveInput.timeout}s).`);
-        await page.goto(job.url, { timeout: effectiveInput.timeout * 1000, waitUntil: 'networkidle' });
-        logEntry(`Navigation to ${job.url} (networkidle) complete.`);
+        logEntry(`Navigating to ${job.url} with waitUntil: 'load' (timeout ${effectiveInput.timeout}s).`);
+        await page.goto(job.url, { timeout: effectiveInput.timeout * 1000, waitUntil: 'load' });
+        logEntry(`Initial navigation to ${job.url} (load) complete.`);
 
-        if (job.platform === 'youtube') { // Use job.platform here
+        // Wait for network to be idle for a bit after 'load' to catch more dynamic content
+        try {
+            logEntry('Waiting for network idle (up to 30s)...');
+            await page.waitForLoadState('networkidle', { timeout: 30000 });
+            logEntry('Network is idle.');
+        } catch(e) {
+            logEntry(`Network did not become idle within 30s: ${e.message}. Proceeding anyway.`, 'warn');
+        }
+
+
+        if (job.platform === 'youtube') {
             logEntry('Checking for YouTube consent dialog...');
             const consentFrameSelectors = ['iframe[src*="consent.google.com"]', 'iframe[src*="consent.youtube.com"]'];
             let consentFrame;
             for (const frameSelector of consentFrameSelectors) {
-                const frameHandle = await page.waitForSelector(frameSelector, {timeout: 5000}).catch(() => null);
+                const frameHandle = await page.waitForSelector(frameSelector, {timeout: 7000}).catch(() => null); // Increased iframe check timeout
                 if (frameHandle) {
                     consentFrame = await frameHandle.contentFrame();
                     if (consentFrame) {
@@ -367,12 +399,13 @@ async function runSingleJob(job, effectiveInput, actorProxyConfiguration, custom
                 logEntry('Consent iframe content frame obtained. Attempting to click "Accept all" or similar.');
                 const acceptSelectors = [
                     'button[aria-label*="Accept all"]', 'button:has-text("Accept all")',
-                    'button:has-text("Agree to all")', 'button[jsname*="LgbsSe"]',
+                    'button:has-text("Agree to all")', 'button[jsname*="LgbsSe"]', // Common Google button jsname
                     'div[role="button"]:has-text("Accept all")'
                 ];
                 let clickedConsentInFrame = false;
                 for (const selector of acceptSelectors) {
-                    if (await consentFrame.locator(selector).click({timeout: 5000}).then(() => true).catch(() => false) ) {
+                     // Use frame.locator for elements inside iframe
+                    if (await consentFrame.locator(selector).click({timeout: 5000, trial: true}).then(() => true).catch(() => false) ) {
                         logEntry(`Clicked consent button "${selector}" in iframe.`);
                         await page.waitForTimeout(3000 + Math.random() * 2000);
                         clickedConsentInFrame = true;
@@ -384,18 +417,25 @@ async function runSingleJob(job, effectiveInput, actorProxyConfiguration, custom
                 logEntry('No consent iframe detected. Checking main page for consent buttons.');
                 const mainPageConsentSelectors = [
                     'button[aria-label*="Accept all"]', 'button[aria-label*="Agree to all"]', 'button:has-text("Accept all")',
-                    'tp-yt-paper-button[aria-label*="Accept all"]', 'ytd-button-renderer:has-text("Accept all") button'
+                    'tp-yt-paper-button[aria-label*="Accept all"]', 'ytd-button-renderer:has-text("Accept all") button',
+                    // More aggressive selectors based on typical YouTube HTML structure
+                    '#dialog footer button.yt-spec-button-shape-next--filled', // Often for "Accept all" in new dialogs
+                    'ytd-consent-bump-v2-lightbox button[aria-label*="Accept"]',
+                    '#lightbox ytd-button-renderer[class*="consent"] button'
                 ];
+                let mainConsentClicked = false;
                 for (const selector of mainPageConsentSelectors) {
                     if (await clickIfExists(page, selector, 5000)) {
                         logEntry(`Clicked main page consent button: ${selector}`);
-                        await page.waitForTimeout(2000 + Math.random() * 1000); break;
+                        await page.waitForTimeout(2000 + Math.random() * 1000); 
+                        mainConsentClicked = true;
+                        break;
                     }
                 }
+                if (!mainConsentClicked) logEntry('No main page consent button clicked.', 'debug');
             }
-        } else { /* Generic consent for Rumble or others */ }
+        } else { /* Generic consent for Rumble or others, if needed */ }
         
-        // FIX: Use job.platform instead of undefined 'platform'
         const playerSelector = job.platform === 'youtube' ? '#movie_player video.html5-main-video, ytd-player video' : '.rumble-player-video-wrapper video, video.rumble-player';
         try {
             logEntry(`Waiting for player element (${playerSelector}) to be visible.`);
@@ -403,12 +443,21 @@ async function runSingleJob(job, effectiveInput, actorProxyConfiguration, custom
             logEntry(`Player element (${playerSelector}) is visible.`);
         } catch (videoWaitError) {
             logEntry(`Player element (${playerSelector}) not visible within 60s: ${videoWaitError.message}`, 'error');
+            try {
+                const screenshotBuffer = await page.screenshot({fullPage: true});
+                await ApifyModule.Actor.setValue(`SCREENSHOT_PLAYER_FAIL_${job.id}`, screenshotBuffer, { contentType: 'image/png' });
+                logEntry('Screenshot taken on player wait failure.');
+            } catch (screenshotError) {
+                logEntry(`Failed to take screenshot: ${screenshotError.message}`, 'warn');
+            }
             const pageContent = await page.content({timeout: 5000}).catch(() => 'Could not get page content.');
-            logEntry(`Page content sample (first 500 chars): ${pageContent.substring(0, 500)}`, 'debug');
+            logEntry(`Page content sample (first 1000 chars): ${pageContent.substring(0, 1000)}`, 'debug');
+            logEntry(`Current URL: ${page.url()}`, 'debug');
+            logEntry(`Page title: ${await page.title().catch(()=>'N/A')}`, 'debug');
             throw new Error(`Player element not visible after 60s: ${videoWaitError.message}`);
         }
 
-        const watchResult = await watchVideoOnPage(page, job, effectiveInput); // Pass job here
+        const watchResult = await watchVideoOnPage(page, job, effectiveInput);
         Object.assign(jobResult, watchResult);
     } catch (e) {
         logEntry(`Critical error in job ${job.url}: ${e.message}\n${e.stack}`, 'error');
@@ -442,8 +491,8 @@ async function actorMainLogic() {
             error: (message, data) => console.error(`CONSOLE_ERROR: ${message}`, data || ''),
             debug: (message, data) => console.log(`CONSOLE_DEBUG: ${message}`, data || ''),
         };
-        console.log('Inspecting ApifyModule.Actor object:');
-        console.dir(ApifyModule.Actor, { depth: 2 });
+        // console.log('Inspecting ApifyModule.Actor object:');
+        // console.dir(ApifyModule.Actor, { depth: 2 }); // Already saw this, not very helpful for the log issue itself
     }
     GlobalLogger.info('Starting YouTube & Rumble View Bot Actor (Apify SDK v3 compatible).');
 

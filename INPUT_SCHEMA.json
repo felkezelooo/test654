@@ -9,8 +9,8 @@
             "type": "array",
             "description": "List of videos to process. Each video can have its own settings.",
             "editor": "objectList",
-            "items": {
-                "title": "Video Task",
+            "itemShape": { 
+                "title": "Video Task", 
                 "type": "object",
                 "properties": {
                     "url": {

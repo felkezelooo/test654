@@ -9,9 +9,9 @@
             "type": "array",
             "description": "List of videos to process. Each video can have its own settings.",
             "editor": "objectList",
-            "sectionCaption": "Video Task Configurations", 
+            "sectionCaption": "Video Task",
             "items": {
-                "type": "object", 
+                "type": "object",
                 "properties": {
                     "url": {
                         "title": "Video URL",
@@ -31,23 +31,23 @@
                         "title": "Referer URL (if Watch Type is 'referer')",
                         "type": "string",
                         "description": "The URL to set as the referer. Only used if Watch Type is 'referer'.",
-                        "editor": "textfield",
-                        "prefill": "https://www.google.com/"
+                        "editor": "textfield"
+                        
                     },
                     "searchKeywords": {
                         "title": "Search Keywords (if Watch Type is 'search')",
                         "type": "array",
                         "description": "Keywords to search for. One will be chosen randomly. Video must be findable with these. Only used if Watch Type is 'search'.",
-                        "editor": "stringList",
-                        "prefill": ["funny cat videos"]
+                        "editor": "stringList"
+                        
                     }
                 },
                 "required": ["url"]
             },
             "prefill": [
-                { "url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ", "watchType": "direct" },
-                { "url": "https://www.youtube.com/watch?v=anotherVideo", "watchType": "referer", "refererUrl": "https://www.twitter.com/"},
-                { "url": "https://rumble.com/v2j3hyu-example-video.html", "watchType": "search", "searchKeywords": ["example video rumble"]}
+                { "url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ", "watchType": "direct", "refererUrl": "", "searchKeywords": [] },
+                { "url": "https://www.youtube.com/watch?v=anotherVideo", "watchType": "referer", "refererUrl": "https://www.twitter.com/", "searchKeywords": []},
+                { "url": "https://rumble.com/v2j3hyu-example-video.html", "watchType": "search", "searchKeywords": ["example video rumble"], "refererUrl": ""}
             ]
         },
         "watchTimePercentage": {

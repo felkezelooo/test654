@@ -1,43 +1,48 @@
 const Apify = require('apify');
 const { Actor } = Apify;
-const { v4: uuidv4 } = require('uuid');
-const to = require('await-to-js').default;
 const playwright = require('playwright');
 const proxyChain = require('proxy-chain');
 const systemInformation = require('systeminformation');
-
-// Import core functionality from original bot
+const { v4: uuidv4 } = require('uuid');
+const to = require('await-to-js').default;
 const fs = require('fs');
 const path = require('path');
-
-// Remove all premium restrictions
-const PREMIUM_ENABLED = true;
+const os = require('os');
 
 /**
- * Main Apify Actor function
+ * Main function
  */
 async function main() {
-    // Get input from the user
-    const input = await Actor.getInput();
+    // Get input
+    const input = await Actor.getInput() || {};
     console.log('Input:');
     console.log(JSON.stringify(input, null, 2));
-
-    // Initialize settings with defaults and user input
+    
+    // Convert skipAdsAfter from strings to numbers
+    if (input.skipAdsAfter && Array.isArray(input.skipAdsAfter)) {
+        input.skipAdsAfter = input.skipAdsAfter.map(val => parseInt(val, 10));
+    }
+    
+    // Set default settings
     const settings = {
-        // Video settings
+        // Video URLs
         videoUrls: input.videoUrls || [],
-        watchTimePercentage: input.watchTimePercentage || 80,
         
         // Proxy settings
         useProxies: input.useProxies !== false,
         proxyUrls: input.proxyUrls || [],
-        proxyCountry: input.proxyCountry || null,
         proxyGroups: input.proxyGroups || ['RESIDENTIAL'],
+        proxyCountry: input.proxyCountry || '',
         
         // Browser settings
         headless: input.headless !== false,
+        
+        // Concurrency settings
         concurrency: input.concurrency || 5,
         concurrencyInterval: input.concurrencyInterval || 5,
+        
+        // Video settings
+        watchTimePercentage: input.watchTimePercentage || 80,
         timeout: input.timeout || 120,
         
         // Ad settings
@@ -52,7 +57,7 @@ async function main() {
         // Premium features (all enabled by default)
         useAV1: input.useAV1 !== false,
     };
-
+    
     // Initialize state
     const state = {
         videos: [],
@@ -68,7 +73,7 @@ async function main() {
         lastInterval: null,
         lastHealth: null
     };
-
+    
     // Process video URLs
     for (const url of settings.videoUrls) {
         let videoId = '';
@@ -102,7 +107,7 @@ async function main() {
             });
         }
     }
-
+    
     // Process proxies
     if (settings.useProxies) {
         // Add user-provided proxies
@@ -124,7 +129,7 @@ async function main() {
             }
         }
     }
-
+    
     // Skip proxy tests if disabled
     if (settings.disableProxyTests) {
         state.proxyStats.good.push(...state.proxyStats.untested);
@@ -133,17 +138,17 @@ async function main() {
         // Test proxies
         await checkProxies(state.proxyStats.untested, state);
     }
-
+    
     // Generate jobs
     for (const video of state.videos) {
         if (video.id.trim().length >= 7) {
             await generateJobs(video, state.proxyStats.good.map(p => p.url), state);
         }
     }
-
+    
     // Start working
     await startWorking(state, settings);
-
+    
     // Log results
     console.log(`Completed ${state.workersFinished.length} jobs`);
     
@@ -169,15 +174,18 @@ async function checkProxies(proxies, state) {
             const proxyUrl = proxy.url;
             const anonymizedProxyUrl = await proxyChain.anonymizeProxy(proxyUrl);
             
-            const browser = await playwright.chromium.launch({
+            // Create a temporary user data directory for testing
+            const tempUserDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'playwright-test-'));
+            
+            // Use launchPersistentContext instead of launch with --user-data-dir
+            const browser = await playwright.chromium.launchPersistentContext(tempUserDataDir, {
                 headless: true,
                 proxy: {
                     server: anonymizedProxyUrl
                 }
             });
             
-            const context = await browser.newContext();
-            const page = await context.newPage();
+            const page = await browser.newPage();
             
             const [err] = await to(page.goto('https://www.google.com', { 
                 timeout: 30000,
@@ -185,6 +193,9 @@ async function checkProxies(proxies, state) {
             }));
             
             await browser.close();
+            
+            // Clean up the temporary directory
+            fs.rmSync(tempUserDataDir, { recursive: true, force: true });
             
             if (!err) {
                 state.proxyStats.good.push(proxy);
@@ -203,7 +214,7 @@ async function checkProxies(proxies, state) {
 }
 
 /**
- * Generate jobs for videos and proxies
+ * Generate jobs for a video
  */
 async function generateJobs(video, proxies, state) {
     if (proxies.length === 0) {
@@ -211,105 +222,88 @@ async function generateJobs(video, proxies, state) {
         return;
     }
     
-    for (let i = 0; i < proxies.length; i++) {
-        const job = {
-            id: uuidv4(),
-            video_info: video,
-            proxy: proxies[i]
-        };
+    // Create a job for each proxy
+    for (let i = 0; i < 1; i++) {
+        const proxyUrl = proxies[i % proxies.length];
         
-        state.jobs.push(job);
+        state.jobs.push({
+            id: uuidv4(),
+            video_id: video.id,
+            video_info: video,
+            proxy: proxyUrl
+        });
+        
+        console.log(`Generated ${state.jobs.length} jobs for video ${video.id}`);
     }
-    
-    console.log(`Generated ${proxies.length} jobs for video ${video.id}`);
 }
 
 /**
- * Start worker for a job
+ * Start a worker for a job
  */
 async function startWorker(job, worker, userDataDir, settings) {
-    console.log(`Starting worker for job ${job.id}, video ${job.video_info.id}`);
+    console.log(`Starting worker for job ${job.id}, video ${job.video_id}`);
     
     try {
-        // Setup browser with proxy
-        const proxyUrl = job.proxy;
-        const anonymizedProxyUrl = await proxyChain.anonymizeProxy(proxyUrl);
+        // Create user data directory if it doesn't exist
+        const userDataDirPath = path.join(os.tmpdir(), `playwright-data-${userDataDir}`);
+        if (!fs.existsSync(userDataDirPath)) {
+            fs.mkdirSync(userDataDirPath, { recursive: true });
+        }
         
-        const browser = await playwright.chromium.launch({
+        // Anonymize proxy URL
+        const anonymizedProxyUrl = await proxyChain.anonymizeProxy(job.proxy);
+        
+        // Use launchPersistentContext instead of launch with --user-data-dir
+        const browser = await playwright.chromium.launchPersistentContext(userDataDirPath, {
             headless: settings.headless,
             proxy: {
                 server: anonymizedProxyUrl
             },
-            args: [
-                '--disable-web-security',
-                '--disable-features=IsolateOrigins,site-per-process',
-                '--autoplay-policy=no-user-gesture-required',
-                '--disable-blink-features=AutomationControlled',
-                `--user-data-dir=/tmp/playwright-${userDataDir}`
-            ]
-        });
-        
-        const context = await browser.newContext({
-            userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
             viewport: { width: 1280, height: 720 },
-            deviceScaleFactor: 1,
+            userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+            // Removed the args array with --user-data-dir
         });
         
-        // Add log entry
-        worker.logs.push(`Browser launched with proxy ${proxyUrl}`);
+        const page = await browser.newPage();
         
-        // Create page
-        const page = await context.newPage();
+        // Set timeout
+        page.setDefaultTimeout(settings.timeout * 1000);
         
-        // Setup page event handlers
-        page.on('console', msg => {
-            worker.logs.push(`Console: ${msg.text()}`);
-        });
-        
-        page.on('pageerror', err => {
-            worker.logs.push(`Page error: ${err.message}`);
-        });
-        
-        // Navigate to video
-        const videoUrl = job.video_info.url;
-        worker.logs.push(`Navigating to ${videoUrl}`);
-        
-        await page.goto(videoUrl, { 
-            timeout: settings.timeout * 1000,
-            waitUntil: 'domcontentloaded'
-        });
-        
-        // Wait for video to load
-        worker.logs.push('Waiting for video to load');
-        
+        // Handle the video based on platform
+        let success = false;
         if (job.video_info.platform === 'youtube') {
-            // Handle YouTube
-            await handleYouTubeVideo(page, job, worker, settings);
+            success = await handleYouTubeVideo(page, job, worker, settings);
         } else if (job.video_info.platform === 'rumble') {
-            // Handle Rumble
-            await handleRumbleVideo(page, job, worker, settings);
+            success = await handleRumbleVideo(page, job, worker, settings);
         }
         
         // Close browser
         await browser.close();
-        worker.logs.push('Browser closed');
         
-        return true;
+        // Clean up user data directory
+        if (fs.existsSync(userDataDirPath)) {
+            fs.rmSync(userDataDirPath, { recursive: true, force: true });
+        }
+        
+        return success;
     } catch (error) {
-        worker.logs.push(`Error: ${error.message}`);
-        console.error(`Worker error: ${error.message}`);
+        worker.logs.push(`Worker error: ${error.message}`);
+        console.log(`Worker error: ${error.message}`);
         return false;
     }
 }
 
 /**
- * Handle YouTube video playback
+ * Handle YouTube video
  */
 async function handleYouTubeVideo(page, job, worker, settings) {
     try {
-        // Wait for video player
+        // Navigate to video
+        worker.logs.push(`Navigating to YouTube video ${job.video_id}`);
+        await page.goto(`https://www.youtube.com/watch?v=${job.video_id}`, { waitUntil: 'domcontentloaded' });
+        
+        // Wait for video player to load
         await page.waitForSelector('video', { timeout: 30000 });
-        worker.logs.push('Video player found');
         
         // Get video duration
         const videoDuration = await page.evaluate(() => {
@@ -317,11 +311,61 @@ async function handleYouTubeVideo(page, job, worker, settings) {
             return video ? video.duration : 0;
         });
         
+        if (!videoDuration) {
+            worker.logs.push('Could not determine video duration');
+            return false;
+        }
+        
         worker.logs.push(`Video duration: ${videoDuration} seconds`);
         
-        // Calculate watch time
-        const watchTimeSeconds = (videoDuration * job.video_info.watchTime) / 100;
+        // Calculate watch time based on percentage
+        const watchTimeSeconds = Math.floor(videoDuration * (job.video_info.watchTime / 100));
         worker.logs.push(`Will watch for ${watchTimeSeconds} seconds (${job.video_info.watchTime}%)`);
+        
+        // Handle ads if present
+        let adHandled = false;
+        const adCheckInterval = setInterval(async () => {
+            try {
+                // Check for ad
+                const isAd = await page.evaluate(() => {
+                    return document.querySelector('.ytp-ad-text') !== null;
+                });
+                
+                if (isAd && !adHandled && settings.autoSkipAds) {
+                    adHandled = true;
+                    worker.logs.push('Ad detected, waiting to skip...');
+                    
+                    // Wait for skip button or ad to finish
+                    const skipAdPromise = page.waitForSelector('.ytp-ad-skip-button', { timeout: settings.maxSecondsAds * 1000 });
+                    const adFinishPromise = page.waitForFunction(() => !document.querySelector('.ytp-ad-text'), { timeout: settings.maxSecondsAds * 1000 });
+                    
+                    const skipAdTimeout = setTimeout(async () => {
+                        // Try to skip ad after specified time
+                        const skipButton = await page.$('.ytp-ad-skip-button');
+                        if (skipButton) {
+                            await skipButton.click();
+                            worker.logs.push('Skipped ad after timeout');
+                        }
+                    }, settings.skipAdsAfter[0] * 1000);
+                    
+                    await Promise.race([skipAdPromise, adFinishPromise]);
+                    clearTimeout(skipAdTimeout);
+                    
+                    // Click skip button if available
+                    const skipButton = await page.$('.ytp-ad-skip-button');
+                    if (skipButton) {
+                        await skipButton.click();
+                        worker.logs.push('Skipped ad');
+                    } else {
+                        worker.logs.push('Ad finished or could not be skipped');
+                    }
+                    
+                    adHandled = false;
+                }
+            } catch (error) {
+                worker.logs.push(`Error handling ad: ${error.message}`);
+            }
+        }, 1000);
         
         // Click play if needed
         await page.evaluate(() => {
@@ -331,38 +375,12 @@ async function handleYouTubeVideo(page, job, worker, settings) {
             }
         });
         
-        // Handle ads if needed
-        if (settings.autoSkipAds) {
-            worker.logs.push('Auto skip ads enabled');
-            
-            // Check for ads periodically
-            const adCheckInterval = setInterval(async () => {
-                try {
-                    const isAd = await page.evaluate(() => {
-                        return document.querySelector('.ytp-ad-player-overlay') !== null;
-                    });
-                    
-                    if (isAd) {
-                        worker.logs.push('Ad detected, attempting to skip');
-                        
-                        // Try to click skip button
-                        await page.evaluate(() => {
-                            const skipButton = document.querySelector('.ytp-ad-skip-button');
-                            if (skipButton) skipButton.click();
-                        });
-                    }
-                } catch (error) {
-                    // Ignore errors in ad checking
-                }
-            }, 2000);
-            
-            // Clear interval when done
-            setTimeout(() => clearInterval(adCheckInterval), watchTimeSeconds * 1000);
-        }
-        
         // Wait for the calculated watch time
         worker.logs.push(`Watching video for ${watchTimeSeconds} seconds`);
         await page.waitForTimeout(watchTimeSeconds * 1000);
+        
+        // Clear ad check interval
+        clearInterval(adCheckInterval);
         
         worker.logs.push('Finished watching video');
         return true;
@@ -373,13 +391,16 @@ async function handleYouTubeVideo(page, job, worker, settings) {
 }
 
 /**
- * Handle Rumble video playback
+ * Handle Rumble video
  */
 async function handleRumbleVideo(page, job, worker, settings) {
     try {
-        // Wait for video player
+        // Navigate to video
+        worker.logs.push(`Navigating to Rumble video ${job.video_id}`);
+        await page.goto(`https://rumble.com/${job.video_id}`, { waitUntil: 'domcontentloaded' });
+        
+        // Wait for video player to load
         await page.waitForSelector('video', { timeout: 30000 });
-        worker.logs.push('Video player found');
         
         // Get video duration
         const videoDuration = await page.evaluate(() => {
@@ -387,10 +408,15 @@ async function handleRumbleVideo(page, job, worker, settings) {
             return video ? video.duration : 0;
         });
         
+        if (!videoDuration) {
+            worker.logs.push('Could not determine video duration');
+            return false;
+        }
+        
         worker.logs.push(`Video duration: ${videoDuration} seconds`);
         
-        // Calculate watch time
-        const watchTimeSeconds = (videoDuration * job.video_info.watchTime) / 100;
+        // Calculate watch time based on percentage
+        const watchTimeSeconds = Math.floor(videoDuration * (job.video_info.watchTime / 100));
         worker.logs.push(`Will watch for ${watchTimeSeconds} seconds (${job.video_info.watchTime}%)`);
         
         // Click play if needed
@@ -527,3 +553,4 @@ async function startWorking(state, settings) {
 
 // Run the actor
 Actor.main(main);
+

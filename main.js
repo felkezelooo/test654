@@ -34,7 +34,7 @@ const ANTI_DETECTION_ARGS = [
 ];
 
 // GlobalLogger will be initialized after Actor.init()
-let GlobalLogger;
+let GlobalLogger; // Declare, but assign after Actor.init()
 
 async function applyAntiDetectionScripts(pageOrContext) {
     const script = () => {
@@ -49,7 +49,7 @@ async function applyAntiDetectionScripts(pageOrContext) {
                 if (parameter === 37446) return 'ANGLE (Intel, Intel(R) Iris(TM) Plus Graphics 640, OpenGL 4.1)';
                 return originalGetParameter.apply(this, arguments);
             };
-        } catch (e) { /* console.warn('Failed WebGL spoof:', e.message) */ }
+        } catch (e) { if (GlobalLogger) GlobalLogger.debug('Failed WebGL spoof:', e.message); else console.warn('Failed WebGL spoof:', e.message); }
         try {
             const originalToDataURL = HTMLCanvasElement.prototype.toDataURL;
             HTMLCanvasElement.prototype.toDataURL = function() {
@@ -66,11 +66,11 @@ async function applyAntiDetectionScripts(pageOrContext) {
                             imageData.data[i+3] = Math.min(255,Math.max(0,imageData.data[i+3]+shift.a));
                         }
                         ctx.putImageData(imageData,0,0);
-                    } catch(e) { /* console.warn('Failed Canvas noise:', e.message) */ }
+                    } catch(e) { if (GlobalLogger) GlobalLogger.debug('Failed Canvas noise:', e.message); else console.warn('Failed Canvas noise:', e.message); }
                 }
                 return originalToDataURL.apply(this, arguments);
             };
-        } catch (e) { /* console.warn('Failed Canvas spoof:', e.message) */ }
+        } catch (e) { if (GlobalLogger) GlobalLogger.debug('Failed Canvas spoof:', e.message); else console.warn('Failed Canvas spoof:', e.message); }
         if (navigator.permissions && typeof navigator.permissions.query === 'function') {
             const originalPermissionsQuery = navigator.permissions.query;
             navigator.permissions.query = (parameters) => ( parameters.name === 'notifications' ? Promise.resolve({ state: Notification.permission || 'prompt' }) : originalPermissionsQuery.call(navigator.permissions, parameters) );
@@ -83,11 +83,11 @@ async function applyAntiDetectionScripts(pageOrContext) {
                 Object.defineProperty(window.screen, 'height', { get: () => 1080, configurable: true });
                 Object.defineProperty(window.screen, 'colorDepth', { get: () => 24, configurable: true });
                 Object.defineProperty(window.screen, 'pixelDepth', { get: () => 24, configurable: true });
-            } catch (e) { /* console.warn('Failed screen spoof:', e.message) */ }
+            } catch (e) { if (GlobalLogger) GlobalLogger.debug('Failed screen spoof:', e.message); else console.warn('Failed screen spoof:', e.message); }
         }
-        try { Date.prototype.getTimezoneOffset = function() { return 5 * 60; }; } catch (e) { /* console.warn('Failed timezone spoof:', e.message) */ }
-        if (navigator.plugins) try { Object.defineProperty(navigator, 'plugins', { get: () => [], configurable: true }); } catch(e) { /* console.warn('Failed plugin spoof:', e.message) */ }
-        if (navigator.mimeTypes) try { Object.defineProperty(navigator, 'mimeTypes', { get: () => [], configurable: true }); } catch(e) { /* console.warn('Failed mimeType spoof:', e.message) */ }
+        try { Date.prototype.getTimezoneOffset = function() { return 5 * 60; }; } catch (e) { if (GlobalLogger) GlobalLogger.debug('Failed timezone spoof:', e.message); else console.warn('Failed timezone spoof:', e.message); }
+        if (navigator.plugins) try { Object.defineProperty(navigator, 'plugins', { get: () => [], configurable: true }); } catch(e) { if (GlobalLogger) GlobalLogger.debug('Failed plugin spoof:', e.message); else console.warn('Failed plugin spoof:', e.message); }
+        if (navigator.mimeTypes) try { Object.defineProperty(navigator, 'mimeTypes', { get: () => [], configurable: true }); } catch(e) { if (GlobalLogger) GlobalLogger.debug('Failed mimeType spoof:', e.message); else console.warn('Failed mimeType spoof:', e.message); }
     };
     if (pageOrContext.addInitScript) await pageOrContext.addInitScript(script);
     else await pageOrContext.evaluateOnNewDocument(script);
@@ -104,29 +104,29 @@ function extractVideoId(url) {
             return lastPart.split('-')[0] || lastPart;
         }
     } catch (error) {
-        GlobalLogger.error(`Error extracting video ID from URL ${url}: ${error.message}`);
+        (GlobalLogger || console).error(`Error extracting video ID from URL ${url}: ${error.message}`);
     }
     return null;
 }
 
 async function getVideoDuration(page) {
-    GlobalLogger.info('Attempting to get video duration.');
+    (GlobalLogger || console).info('Attempting to get video duration.');
     for (let i = 0; i < 15; i++) {
         try {
             const duration = await page.evaluate(() => {
-                const video = document.querySelector('video.html5-main-video, video.rumble-player-video'); // More specific
+                const video = document.querySelector('video.html5-main-video, video.rumble-player-video');
                 return video ? video.duration : null;
             });
             if (duration && duration !== Infinity && duration > 0) {
-                GlobalLogger.info(`Video duration found: ${duration} seconds.`);
+                (GlobalLogger || console).info(`Video duration found: ${duration} seconds.`);
                 return duration;
             }
         } catch (e) {
-            GlobalLogger.debug(`Attempt ${i+1} to get duration failed: ${e.message}`);
+            (GlobalLogger || console).debug(`Attempt ${i+1} to get duration failed: ${e.message}`);
         }
         await new Promise(resolve => setTimeout(resolve, 1000));
     }
-    GlobalLogger.warning('Could not determine video duration after 15 seconds.');
+    (GlobalLogger || console).warning('Could not determine video duration after 15 seconds.');
     return null;
 }
 
@@ -134,17 +134,17 @@ async function clickIfExists(page, selector, timeout = 3000) {
     try {
         const element = page.locator(selector).first();
         await element.waitFor({ state: 'visible', timeout });
-        await element.click({ timeout: timeout / 2, force: false, noWaitAfter: false }); // noWaitAfter: false is default
-        GlobalLogger.info(`Clicked on selector: ${selector}`);
+        await element.click({ timeout: timeout / 2, force: false, noWaitAfter: false });
+        (GlobalLogger || console).info(`Clicked on selector: ${selector}`);
         return true;
     } catch (e) {
-        GlobalLogger.debug(`Selector not found or not clickable within ${timeout}ms: ${selector} - Error: ${e.message}`);
+        (GlobalLogger || console).debug(`Selector not found or not clickable within ${timeout}ms: ${selector} - Error: ${e.message}`);
         return false;
     }
 }
 
 async function handleAds(page, platform, effectiveInput) {
-    GlobalLogger.info('Starting ad handling logic.');
+    (GlobalLogger || console).info('Starting ad handling logic.');
     const adCheckInterval = 3000;
     let adWatchLoop = 0;
     const maxAdLoopIterations = Math.ceil((effectiveInput.maxSecondsAds * 1000) / adCheckInterval) + 5;
@@ -157,54 +157,53 @@ async function handleAds(page, platform, effectiveInput) {
         if (platform === 'youtube') {
             isAdPlaying = await page.locator('.ytp-ad-player-overlay-instream-info, .video-ads .ad-showing').count() > 0;
             if (isAdPlaying) {
-                GlobalLogger.info('YouTube ad detected.');
+                (GlobalLogger || console).info('YouTube ad detected.');
                 canSkip = await page.locator('.ytp-ad-skip-button-modern, .ytp-ad-skip-button').count() > 0;
             }
         } else if (platform === 'rumble') {
-            // Rumble ad detection may need more refinement
             isAdPlaying = await page.locator('.video-ad-indicator, .ima-ad-container :not([style*="display: none"]):not([style*="visibility: hidden"])').count() > 0;
              if (isAdPlaying) {
-                GlobalLogger.info('Rumble ad detected.');
+                (GlobalLogger || console).info('Rumble ad detected.');
                 canSkip = await page.locator('button[aria-label*="Skip Ad"], div[class*="skip-button"], .videoAdUiSkipButton').count() > 0;
              }
         }
 
         if (!isAdPlaying) {
-            GlobalLogger.info('No ad currently playing or ad finished.');
+            (GlobalLogger || console).info('No ad currently playing or ad finished.');
             break;
         }
 
         const minSkipTime = Array.isArray(effectiveInput.skipAdsAfter) && effectiveInput.skipAdsAfter.length > 0 ? parseInt(effectiveInput.skipAdsAfter[0], 10) : 5;
         
         if (effectiveInput.autoSkipAds && canSkip) {
-            GlobalLogger.info('Attempting to skip ad (autoSkipAds).');
+            (GlobalLogger || console).info('Attempting to skip ad (autoSkipAds).');
             await clickIfExists(page, '.ytp-ad-skip-button-modern, .ytp-ad-skip-button, button[aria-label*="Skip Ad"], div[class*="skip-button"], .videoAdUiSkipButton', 1000);
             await page.waitForTimeout(2000 + Math.random() * 1000); 
             continue; 
         }
 
         if (adCurrentTime >= minSkipTime && canSkip) {
-            GlobalLogger.info(`Ad has played for ~${adCurrentTime.toFixed(1)}s, attempting to skip (skipAdsAfter).`);
+            (GlobalLogger || console).info(`Ad has played for ~${adCurrentTime.toFixed(1)}s, attempting to skip (skipAdsAfter).`);
             await clickIfExists(page, '.ytp-ad-skip-button-modern, .ytp-ad-skip-button, button[aria-label*="Skip Ad"], div[class*="skip-button"], .videoAdUiSkipButton', 1000);
             await page.waitForTimeout(2000 + Math.random() * 1000);
             continue;
         }
         
         if (adCurrentTime >= effectiveInput.maxSecondsAds) {
-             GlobalLogger.info(`Ad has played for ~${adCurrentTime.toFixed(1)}s (maxSecondsAds reached).`);
+             (GlobalLogger || console).info(`Ad has played for ~${adCurrentTime.toFixed(1)}s (maxSecondsAds reached).`);
              if (canSkip) {
                 await clickIfExists(page, '.ytp-ad-skip-button-modern, .ytp-ad-skip-button, button[aria-label*="Skip Ad"], div[class*="skip-button"], .videoAdUiSkipButton', 1000);
              } else {
-                GlobalLogger.info('Max ad watch time reached, but cannot skip yet.');
+                (GlobalLogger || console).info('Max ad watch time reached, but cannot skip yet.');
              }
              break; 
         }
         await page.waitForTimeout(adCheckInterval);
     }
     if (adWatchLoop >= maxAdLoopIterations) {
-        GlobalLogger.warning('Max ad loop iterations reached. Proceeding as if ad finished.');
+        (GlobalLogger || console).warning('Max ad loop iterations reached. Proceeding as if ad finished.');
     }
-    GlobalLogger.info('Ad handling finished or timed out.');
+    (GlobalLogger || console).info('Ad handling finished or timed out.');
 }
 
 async function watchVideoOnPage(page, platform, job, effectiveInput) {
@@ -215,7 +214,7 @@ async function watchVideoOnPage(page, platform, job, effectiveInput) {
     };
     const logEntry = (msg, level = 'info') => {
         const formattedMessage = `[Job ${job.id.substring(0,6)}] ${msg}`;
-        GlobalLogger[level](formattedMessage);
+        (GlobalLogger || console)[level](formattedMessage); // Use GlobalLogger or console
         jobResult.log.push(`[${new Date().toISOString()}] [${level.toUpperCase()}] ${msg}`);
     };
 
@@ -281,10 +280,10 @@ async function watchVideoOnPage(page, platform, job, effectiveInput) {
 
 async function runSingleJob(job, effectiveInput, actorProxyConfiguration, customProxyPool) {
     const jobScopedLogger = {
-        info: (msg) => GlobalLogger.info(`[Job ${job.id.substring(0,6)}] ${msg}`),
-        warning: (msg) => GlobalLogger.warning(`[Job ${job.id.substring(0,6)}] ${msg}`),
-        error: (msg, data) => GlobalLogger.error(`[Job ${job.id.substring(0,6)}] ${msg}`, data),
-        debug: (msg) => GlobalLogger.debug(`[Job ${job.id.substring(0,6)}] ${msg}`),
+        info: (msg) => (GlobalLogger || console).info(`[Job ${job.id.substring(0,6)}] ${msg}`),
+        warning: (msg) => (GlobalLogger || console).warning(`[Job ${job.id.substring(0,6)}] ${msg}`),
+        error: (msg, data) => (GlobalLogger || console).error(`[Job ${job.id.substring(0,6)}] ${msg}`, data),
+        debug: (msg) => (GlobalLogger || console).debug(`[Job ${job.id.substring(0,6)}] ${msg}`),
     };
     jobScopedLogger.info(`Starting job for URL: ${job.url}`);
     let browser;
@@ -330,7 +329,7 @@ async function runSingleJob(job, effectiveInput, actorProxyConfiguration, custom
             logEntry('Using ApifyModule.Actor.launchPlaywright.');
             browser = await ApifyModule.Actor.launchPlaywright(launchOptions);
         } else {
-            logEntry('Using playwright.chromium.launch directly.');
+            logEntry('ApifyModule.Actor.launchPlaywright not available. Using playwright.chromium.launch directly.');
             browser = await playwright.chromium.launch(launchOptions);
         }
         logEntry('Browser launched.');
@@ -344,22 +343,30 @@ async function runSingleJob(job, effectiveInput, actorProxyConfiguration, custom
         page = await context.newPage();
         await page.setViewportSize({ width: 1200 + Math.floor(Math.random()*120), height: 700 + Math.floor(Math.random()*80) });
 
-        logEntry(`Navigating to ${job.url} with waitUntil: 'networkidle' (timeout: ${effectiveInput.timeout}s).`);
+        logEntry(`Navigating to ${job.url} with waitUntil: 'networkidle' (timeout ${effectiveInput.timeout}s).`);
         await page.goto(job.url, { timeout: effectiveInput.timeout * 1000, waitUntil: 'networkidle' });
         logEntry(`Navigation to ${job.url} (networkidle) complete.`);
 
-        // More specific consent handling for YouTube
         if (job.platform === 'youtube') {
             logEntry('Checking for YouTube consent dialog...');
-            const consentFrame = page.frameLocator('iframe[src*="consent.google.com"], iframe[src*="consent.youtube.com"]');
-            if (await consentFrame.locator('body').count() > 0) {
-                logEntry('Consent iframe found. Attempting to click "Accept all" or similar.');
-                // Common selectors within Google consent iframes
+            const consentFrameSelectors = ['iframe[src*="consent.google.com"]', 'iframe[src*="consent.youtube.com"]'];
+            let consentFrame;
+            for (const frameSelector of consentFrameSelectors) {
+                const frameHandle = await page.waitForSelector(frameSelector, {timeout: 5000}).catch(() => null);
+                if (frameHandle) {
+                    consentFrame = await frameHandle.contentFrame();
+                    if (consentFrame) {
+                        logEntry(`Consent iframe found with selector: ${frameSelector}`);
+                        break;
+                    }
+                }
+            }
+
+            if (consentFrame) {
+                logEntry('Consent iframe content frame obtained. Attempting to click "Accept all" or similar.');
                 const acceptSelectors = [
-                    'button[aria-label*="Accept all"]',
-                    'button:has-text("Accept all")',
-                    'button:has-text("Agree to all")',
-                    'button[jsname*="LgbsSe"]', // Common Google button jsname
+                    'button[aria-label*="Accept all"]', 'button:has-text("Accept all")',
+                    'button:has-text("Agree to all")', 'button[jsname*="LgbsSe"]',
                     'div[role="button"]:has-text("Accept all")'
                 ];
                 let clickedConsentInFrame = false;
@@ -371,38 +378,21 @@ async function runSingleJob(job, effectiveInput, actorProxyConfiguration, custom
                         break;
                     }
                 }
-                if (!clickedConsentInFrame) {
-                    logEntry('Could not click standard consent buttons in iframe.', 'warn');
-                }
+                if (!clickedConsentInFrame) logEntry('Could not click standard consent buttons in iframe.', 'warn');
             } else {
                 logEntry('No consent iframe detected. Checking main page for consent buttons.');
-                 // Fallback to main page selectors if no iframe
                 const mainPageConsentSelectors = [
                     'button[aria-label*="Accept all"]', 'button[aria-label*="Agree to all"]', 'button:has-text("Accept all")',
-                    'tp-yt-paper-button[aria-label*="Accept all"]', // Polymer button
-                    'ytd-button-renderer:has-text("Accept all") button'
+                    'tp-yt-paper-button[aria-label*="Accept all"]', 'ytd-button-renderer:has-text("Accept all") button'
                 ];
                 for (const selector of mainPageConsentSelectors) {
                     if (await clickIfExists(page, selector, 5000)) {
                         logEntry(`Clicked main page consent button: ${selector}`);
-                        await page.waitForTimeout(2000 + Math.random() * 1000);
-                        break;
+                        await page.waitForTimeout(2000 + Math.random() * 1000); break;
                     }
                 }
             }
-        } else {
-            // Generic consent for other platforms (like Rumble)
-            const consentSelectors = [
-                'button[aria-label*="Accept all"]', 'button[aria-label*="Agree"]', 'button:has-text("Accept All")', 'button:has-text("I Agree")',
-                'div[aria-modal="true"] button:has-text("Accept all")', 'div[aria-modal="true"] button:has-text("I agree")'
-            ];
-            for (const selector of consentSelectors) {
-                if (await clickIfExists(page, selector, 5000)) {
-                    logEntry(`Clicked a generic consent button: ${selector}`);
-                    await page.waitForTimeout(2000 + Math.random() * 1000); break;
-                }
-            }
-        }
+        } else { /* Generic consent for Rumble or others */ }
         
         const playerSelector = platform === 'youtube' ? '#movie_player video.html5-main-video, ytd-player video' : '.rumble-player-video-wrapper video, video.rumble-player';
         try {
@@ -437,13 +427,21 @@ async function actorMainLogic() {
     console.log('ACTOR_MAIN_LOGIC: Actor.init() completed.');
     
     if (ApifyModule.Actor.log && typeof ApifyModule.Actor.log.info === 'function') {
-        console.log('ACTOR_MAIN_LOGIC: Actor.log is available. Switching GlobalLogger.');
+        console.log('ACTOR_MAIN_LOGIC: ApifyModule.Actor.log is available. Switching GlobalLogger.');
         GlobalLogger = ApifyModule.Actor.log;
     } else if (ApifyModule.utils && ApifyModule.utils.log && typeof ApifyModule.utils.log.info === 'function') {
-        console.log('ACTOR_MAIN_LOGIC: Actor.log not available, but Apify.utils.log is. Switching GlobalLogger.');
+        console.log('ACTOR_MAIN_LOGIC: ApifyModule.Actor.log not available, but ApifyModule.utils.log is. Switching GlobalLogger.');
         GlobalLogger = ApifyModule.utils.log;
     } else {
-        console.error('ACTOR_MAIN_LOGIC: Neither Actor.log nor Apify.utils.log is available. Using console for logging.');
+        console.error('ACTOR_MAIN_LOGIC: Neither ApifyModule.Actor.log nor ApifyModule.utils.log is available. Re-assigning console fallback for GlobalLogger.');
+        GlobalLogger = { // Ensure GlobalLogger is assigned
+            info: (message, data) => console.log(`CONSOLE_INFO: ${message}`, data || ''),
+            warning: (message, data) => console.warn(`CONSOLE_WARN: ${message}`, data || ''),
+            error: (message, data) => console.error(`CONSOLE_ERROR: ${message}`, data || ''),
+            debug: (message, data) => console.log(`CONSOLE_DEBUG: ${message}`, data || ''),
+        };
+        console.log('Inspecting ApifyModule.Actor object:');
+        console.dir(ApifyModule.Actor, { depth: 2 });
     }
     GlobalLogger.info('Starting YouTube & Rumble View Bot Actor (Apify SDK v3 compatible).');
 

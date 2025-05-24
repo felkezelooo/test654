@@ -32,9 +32,8 @@
         "searchKeywordsForEachVideo": {
             "title": "Search Keywords (Optional, for 'search' Watch Type)",
             "type": "array",
-            "description": "OPTIONAL: For each video where 'Watch Type' is 'search'. Each item should be a comma-separated string of keywords for the corresponding video. One keyword will be chosen randomly from that string.",
+            "description": "OPTIONAL: For each video where 'Watch Type' is 'search'. Each item should be a comma-separated string of keywords for the corresponding video. One keyword will be chosen randomly from that string. Example for 2 videos: \"keyword1, keyword2 for video1\", \"keyword for video2\"",
             "editor": "stringList",
-            "tooltip": "Example for 2 videos: \"keyword1, keyword2 for video1\", \"keyword for video2\"",
             "default": ["funny cat videos, cute kittens"]
         },
         "watchTimePercentage": {

@@ -6,29 +6,84 @@ const ApifyModule = require('apify');
 const playwright = require('playwright');
 const { v4: uuidv4 } = require('uuid');
 
-const ANTI_DETECTION_ARGS = [ /* ... as before ... */ ];
+const ANTI_DETECTION_ARGS = [
+    '--disable-blink-features=AutomationControlled',
+    '--disable-features=IsolateOrigins,site-per-process,ImprovedCookieControls,LazyFrameLoading,GlobalMediaControls,DestroyProfileOnBrowserClose,MediaRouter,DialMediaRouteProvider,AcceptCHFrame,AutoExpandDetailsElement,CertificateTransparencyEnforcement,AvoidUnnecessaryBeforeUnloadCheckSync,Translate',
+    '--disable-component-extensions-with-background-pages',
+    '--disable-default-apps',
+    '--disable-extensions',
+    '--disable-site-isolation-trials',
+    '--disable-sync',
+    '--force-webrtc-ip-handling-policy=default_public_interface_only',
+    '--no-first-run',
+    '--no-service-autorun',
+    '--password-store=basic',
+    '--use-mock-keychain',
+    '--enable-precise-memory-info',
+    '--window-size=1920,1080',
+    '--disable-infobars',
+    '--disable-notifications',
+    '--disable-popup-blocking',
+    '--disable-dev-shm-usage', 
+    '--no-sandbox', 
+    '--disable-gpu',
+    '--disable-setuid-sandbox',
+    '--disable-software-rasterizer',
+    '--mute-audio',
+    '--ignore-certificate-errors',
+];
+
 let GlobalLogger; 
 
-async function applyAntiDetectionScripts(pageOrContext) { /* ... as before ... */ }
-function extractVideoId(url) { /* ... as before ... */ }
-async function getVideoDuration(page, loggerToUse = GlobalLogger) { /* ... as before ... */ }
-async function clickIfExists(page, selector, timeout = 3000, loggerToUse = GlobalLogger) { /* ... as before ... */ }
-async function handleAds(page, platform, effectiveInput, loggerToUse = GlobalLogger) { /* ... as before ... */ }
-async function watchVideoOnPage(page, job, effectiveInput, loggerToUse = GlobalLogger) { /* ... (ensure it uses loggerToUse or GlobalLogger) ... */ }
-async function runSingleJob(job, effectiveInput, actorProxyConfiguration, customProxyPool, logger) { /* ... (ensure it uses passed logger) ... */ }
-
-// --- Start of unchanged helper functions (ensure they use GlobalLogger or passed logger) ---
-// For brevity, these are not repeated but should be the same as the previous full correct version.
-// Make sure they are defined before actorMainLogic or passed around correctly.
 async function applyAntiDetectionScripts(pageOrContext) {
     const script = () => {
         if (navigator.webdriver === true) Object.defineProperty(navigator, 'webdriver', { get: () => false });
         if (navigator.languages && !navigator.languages.includes('en-US')) Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
         if (navigator.language !== 'en-US') Object.defineProperty(navigator, 'language', { get: () => 'en-US' });
-        try { /* WebGL Spoof */ } catch (e) { (GlobalLogger || console).debug('Failed WebGL spoof:', e.message); }
-        try { /* Canvas Spoof */ } catch (e) { (GlobalLogger || console).debug('Failed Canvas spoof:', e.message); }
-        if (navigator.permissions && typeof navigator.permissions.query === 'function') { /* Permissions Spoof */ }
-        if (window.screen) { try { /* Screen Spoof */ } catch (e) { (GlobalLogger || console).debug('Failed screen spoof:', e.message); } }
+        try {
+            const originalGetParameter = WebGLRenderingContext.prototype.getParameter;
+            WebGLRenderingContext.prototype.getParameter = function (parameter) {
+                if (this.canvas.id === 'webgl-fingerprint-canvas') return originalGetParameter.apply(this, arguments);
+                if (parameter === 37445) return 'Google Inc. (Intel)';
+                if (parameter === 37446) return 'ANGLE (Intel, Intel(R) Iris(TM) Plus Graphics 640, OpenGL 4.1)';
+                return originalGetParameter.apply(this, arguments);
+            };
+        } catch (e) { (GlobalLogger || console).debug('Failed WebGL spoof:', e.message); }
+        try {
+            const originalToDataURL = HTMLCanvasElement.prototype.toDataURL;
+            HTMLCanvasElement.prototype.toDataURL = function() {
+                if (this.id === 'canvas-fingerprint-element') return originalToDataURL.apply(this, arguments);
+                const shift = { r: Math.floor(Math.random()*10)-5, g: Math.floor(Math.random()*10)-5, b: Math.floor(Math.random()*10)-5, a: Math.floor(Math.random()*10)-5 };
+                const ctx = this.getContext('2d');
+                if (ctx && this.width > 0 && this.height > 0) {
+                    try {
+                        const imageData = ctx.getImageData(0,0,this.width,this.height);
+                        for(let i=0; i<imageData.data.length; i+=4){
+                            imageData.data[i] = Math.min(255,Math.max(0,imageData.data[i]+shift.r));
+                            imageData.data[i+1] = Math.min(255,Math.max(0,imageData.data[i+1]+shift.g));
+                            imageData.data[i+2] = Math.min(255,Math.max(0,imageData.data[i+2]+shift.b));
+                            imageData.data[i+3] = Math.min(255,Math.max(0,imageData.data[i+3]+shift.a));
+                        }
+                        ctx.putImageData(imageData,0,0);
+                    } catch(e) { (GlobalLogger || console).debug('Failed Canvas noise:', e.message); }
+                }
+                return originalToDataURL.apply(this, arguments);
+            };
+        } catch (e) { (GlobalLogger || console).debug('Failed Canvas spoof:', e.message); }
+        if (navigator.permissions && typeof navigator.permissions.query === 'function') {
+            const originalPermissionsQuery = navigator.permissions.query;
+            navigator.permissions.query = (parameters) => ( parameters.name === 'notifications' ? Promise.resolve({ state: Notification.permission || 'prompt' }) : originalPermissionsQuery.call(navigator.permissions, parameters) );
+        }
+        if (window.screen) {
+            try {
+                Object.defineProperty(window.screen, 'availWidth', { get: () => 1920, configurable: true });
+                Object.defineProperty(window.screen, 'availHeight', { get: () => 1080, configurable: true });
+                Object.defineProperty(window.screen, 'width', { get: () => 1920, configurable: true });
+                Object.defineProperty(window.screen, 'height', { get: () => 1080, configurable: true });
+                Object.defineProperty(window.screen, 'colorDepth', { get: () => 24, configurable: true });
+                Object.defineProperty(window.screen, 'pixelDepth', { get: () => 24, configurable: true });
+            } catch (e) { (GlobalLogger || console).debug('Failed screen spoof:', e.message); }
+        }
         try { Date.prototype.getTimezoneOffset = function() { return 5 * 60; }; } catch (e) { (GlobalLogger || console).debug('Failed timezone spoof:', e.message); }
         if (navigator.plugins) try { Object.defineProperty(navigator, 'plugins', { get: () => [], configurable: true }); } catch(e) { (GlobalLogger || console).debug('Failed plugin spoof:', e.message); }
         if (navigator.mimeTypes) try { Object.defineProperty(navigator, 'mimeTypes', { get: () => [], configurable: true }); } catch(e) { (GlobalLogger || console).debug('Failed mimeType spoof:', e.message); }
@@ -127,8 +182,17 @@ async function handleAds(page, platform, effectiveInput, loggerToUse = GlobalLog
 }
 
 async function watchVideoOnPage(page, job, effectiveInput, loggerToUse = GlobalLogger) { 
-    const jobResult = { /* ... as before ... */ log: [] };
-    const logEntry = (msg, level = 'info') => { /* ... as before, uses loggerToUse ... */ };
+    const jobResult = {
+        jobId: job.id, url: job.url, videoId: job.videoId, platform: job.platform, status: 'pending',
+        watchTimeRequestedSec: 0, watchTimeActualSec: 0, durationFoundSec: null,
+        startTime: new Date().toISOString(), endTime: null, error: null, log: []
+    };
+    const logEntry = (msg, level = 'info') => {
+        const formattedMessage = `[Job ${job.id.substring(0,6)}] ${msg}`;
+        (loggerToUse || console)[level](formattedMessage); 
+        jobResult.log.push(`[${new Date().toISOString()}] [${level.toUpperCase()}] ${msg}`);
+    };
+
     try {
         logEntry('Handling initial ads.');
         await handleAds(page, job.platform, effectiveInput, loggerToUse);
@@ -153,20 +217,28 @@ async function watchVideoOnPage(page, job, effectiveInput, loggerToUse = GlobalL
              logEntry('No specific play button worked or video not auto-playing, attempting to click video element directly.');
              await page.locator('video').first().click({timeout: 5000, force: true, trial: true}).catch(e => logEntry(`Failed to click video (trial): ${e.message}`, 'warn'));
              const isPausedAfterGeneralClick = await page.evaluate(() => document.querySelector('video')?.paused);
-             if (isPausedAfterGeneralClick === false) logEntry('Video started playing after general video click.');
-             else logEntry('Video still not playing after all attempts.', 'warn');
+             if (isPausedAfterGeneralClick === false) {
+                logEntry('Video started playing after general video click.');
+             } else {
+                logEntry('Video still not playing after all attempts.', 'warn');
+             }
         }
+        
         await page.evaluate(() => { const v = document.querySelector('video'); if(v) { v.muted=false; v.volume=0.05+Math.random()*0.1; }}).catch(e => logEntry(`Unmute/volume failed: ${e.message}`, 'debug'));
+
         const duration = await getVideoDuration(page, loggerToUse);
         if (!duration || duration <= 0) throw new Error('Could not determine valid video duration after multiple attempts.');
         jobResult.durationFoundSec = duration;
+
         const targetWatchTimeSec = Math.floor(duration * (effectiveInput.watchTimePercentage / 100));
         jobResult.watchTimeRequestedSec = targetWatchTimeSec;
         logEntry(`Target watch: ${targetWatchTimeSec.toFixed(2)}s of ${duration.toFixed(2)}s.`);
         if (targetWatchTimeSec <= 0) throw new Error(`Calculated target watch time ${targetWatchTimeSec}s is invalid.`);
+
         let currentActualWatchTime = 0;
         const watchIntervalMs = 5000;
         const maxWatchLoops = Math.ceil(targetWatchTimeSec / (watchIntervalMs / 1000)) + 12;
+
         for (let i = 0; i < maxWatchLoops; i++) {
             logEntry(`Watch loop ${i+1}/${maxWatchLoops}. Ads check.`);
             await handleAds(page, job.platform, effectiveInput, loggerToUse); 
@@ -186,52 +258,210 @@ async function watchVideoOnPage(page, job, effectiveInput, loggerToUse = GlobalL
         }
         if (currentActualWatchTime < targetWatchTimeSec) logEntry(`Watched ${currentActualWatchTime.toFixed(2)}s < target ${targetWatchTimeSec.toFixed(2)}s.`, 'warn');
         jobResult.status = 'success';
-    } catch (e) { /* ... */ } finally { /* ... */ }
+    } catch (e) {
+        logEntry(`Error watching video ${job.url}: ${e.message}`, 'error');
+        jobResult.status = 'failure';
+        jobResult.error = e.message + (e.stack ? `\nStack: ${e.stack}` : '');
+    } finally {
+        jobResult.endTime = new Date().toISOString();
+    }
     return jobResult;
 }
 
 async function runSingleJob(job, effectiveInput, actorProxyConfiguration, customProxyPool, logger) {
-    const jobScopedLogger = { /* ... */ };
+    const jobScopedLogger = {
+        info: (msg) => logger.info(`[Job ${job.id.substring(0,6)}] ${msg}`),
+        warning: (msg) => logger.warning(`[Job ${job.id.substring(0,6)}] ${msg}`),
+        error: (msg, data) => logger.error(`[Job ${job.id.substring(0,6)}] ${msg}`, data),
+        debug: (msg) => logger.debug(`[Job ${job.id.substring(0,6)}] ${msg}`),
+    };
     jobScopedLogger.info(`Starting job for URL: ${job.url}`);
-    let browser; let context; let page; let proxyUrlToUse = null;
-    const jobResult = { /* ... */ };
-    const logEntry = (msg, level = 'info') => { /* ... */ };
+    let browser;
+    let context;
+    let page;
+    let proxyUrlToUse = null;
+    const jobResult = {
+        jobId: job.id, url: job.url, videoId: job.videoId, platform: job.platform,
+        proxyUsed: 'None', status: 'initiated', error: null, log: []
+    };
+    const logEntry = (msg, level = 'info') => {
+        const tsMsg = `[${new Date().toISOString()}] [${level.toUpperCase()}] ${msg}`;
+        jobScopedLogger[level](msg);
+        jobResult.log.push(tsMsg);
+    };
 
     try {
-        const launchOptions = { /* ... */ };
-        if (effectiveInput.useProxies) { /* ... (proxy setup as before, ensuring username/password are undefined if not present) ... */ }
+        const launchOptions = { headless: effectiveInput.headless, args: [...ANTI_DETECTION_ARGS] };
+        if (effectiveInput.useProxies) {
+            if (customProxyPool && customProxyPool.length > 0) {
+                proxyUrlToUse = customProxyPool[Math.floor(Math.random() * customProxyPool.length)];
+                logEntry(`Using custom proxy (host: ${proxyUrlToUse.split('@').pop().split(':')[0]})`);
+                try {
+                    const parsedProxyUrl = new URL(proxyUrlToUse);
+                    launchOptions.proxy = {
+                        server: `${parsedProxyUrl.protocol}//${parsedProxyUrl.hostname}:${parsedProxyUrl.port}`,
+                        username: parsedProxyUrl.username || undefined,
+                        password: parsedProxyUrl.password || undefined
+                    };
+                    jobResult.proxyUsed = `Custom: ${launchOptions.proxy.server} (auth: ${launchOptions.proxy.username ? 'yes' : 'no'})`;
+                } catch (e) {
+                    logEntry(`Invalid custom proxy URL format: ${proxyUrlToUse}. Using as is. Error: ${e.message}`, 'warn');
+                    launchOptions.proxy = { server: proxyUrlToUse }; 
+                    jobResult.proxyUsed = `Custom: ${proxyUrlToUse.split('@')[1] || proxyUrlToUse.split('//')[1] || 'details hidden'}`;
+                }
+            } else if (actorProxyConfiguration) {
+                const sessionId = uuidv4().replace(/-/g, '');
+                try {
+                    proxyUrlToUse = await actorProxyConfiguration.newUrl(sessionId);
+                    const parsedProxyUrl = new URL(proxyUrlToUse); 
+                    launchOptions.proxy = {
+                        server: `${parsedProxyUrl.protocol}//${parsedProxyUrl.hostname}:${parsedProxyUrl.port}`,
+                        username: parsedProxyUrl.username || undefined,
+                        password: parsedProxyUrl.password || undefined
+                    };
+                    const proxyIp = parsedProxyUrl.hostname;
+                    logEntry(`Using Apify proxy (Session: ${sessionId}, IP: ${proxyIp}, Auth: ${launchOptions.proxy.username ? 'yes' : 'no'})`);
+                    jobResult.proxyUsed = `ApifyProxy (${proxyIp})`;
+                } catch (proxyError) {
+                    logEntry(`Failed to get Apify proxy URL: ${proxyError.message}`, 'error');
+                    throw new Error(`Apify Proxy acquisition failed: ${proxyError.message}`);
+                }
+            } else {
+                logEntry('No proxies configured. Running directly.', 'warn');
+            }
+        }
         
         logEntry('Attempting to launch browser...');
-        if (ApifyModule.Actor.isAtHome() && /* ... */ ) { /* ... */ } 
-        else { browser = await playwright.chromium.launch(launchOptions); }
+        // Corrected the condition for using Apify's launchPlaywright
+        if (ApifyModule.Actor.isAtHome() && ApifyModule.Actor.launchPlaywright && typeof ApifyModule.Actor.launchPlaywright === 'function') {
+            logEntry('Using ApifyModule.Actor.launchPlaywright.');
+            browser = await ApifyModule.Actor.launchPlaywright(launchOptions);
+        } else {
+            logEntry('Not on Apify platform or ApifyModule.Actor.launchPlaywright not available. Using playwright.chromium.launch directly.');
+            browser = await playwright.chromium.launch(launchOptions);
+        }
         logEntry('Browser launched.');
         
-        context = await browser.newContext({ /* ... */ });
-        await applyAntiDetectionScripts(context); // Pass context
+        context = await browser.newContext({
+            bypassCSP: true, ignoreHTTPSErrors: true,
+            viewport: { width: 1280 + Math.floor(Math.random() * 200), height: 720 + Math.floor(Math.random() * 100) },
+            locale: 'en-US', timezoneId: 'America/New_York', javaScriptEnabled: true,
+        });
+        await applyAntiDetectionScripts(context);
         page = await context.newPage();
-        await page.setViewportSize({ /* ... */ });
+        await page.setViewportSize({ width: 1200 + Math.floor(Math.random()*120), height: 700 + Math.floor(Math.random()*80) });
 
         logEntry(`Navigating to ${job.url} with waitUntil: 'domcontentloaded' (timeout ${effectiveInput.timeout}s).`);
         await page.goto(job.url, { timeout: effectiveInput.timeout * 1000, waitUntil: 'domcontentloaded' });
         logEntry(`Initial navigation to ${job.url} (domcontentloaded) complete.`);
         
-        try { /* ... (networkidle wait as before) ... */ } 
-        catch(e) { logEntry(`Network did not become idle: ${e.message.split('\n')[0]}. Proceeding.`, 'warn'); }
+        try {
+            logEntry('Waiting for network idle (up to 30s)...');
+            await page.waitForLoadState('networkidle', { timeout: 30000 });
+            logEntry('Network is idle.');
+        } catch(e) {
+            logEntry(`Network did not become idle within 30s: ${e.message.split('\n')[0]}. Proceeding anyway.`, 'warn');
+        }
 
-        if (job.platform === 'youtube') { /* ... (consent handling as before) ... */ }
+        if (job.platform === 'youtube') {
+            logEntry('Checking for YouTube consent dialog...');
+            const consentFrameSelectors = ['iframe[src*="consent.google.com"]', 'iframe[src*="consent.youtube.com"]'];
+            let consentFrame;
+            for (const frameSelector of consentFrameSelectors) {
+                const frameHandle = await page.waitForSelector(frameSelector, {timeout: 7000}).catch(() => null);
+                if (frameHandle) {
+                    consentFrame = await frameHandle.contentFrame();
+                    if (consentFrame) { logEntry(`Consent iframe found with selector: ${frameSelector}`); break; }
+                }
+            }
+
+            if (consentFrame) {
+                logEntry('Consent iframe content frame obtained. Attempting to click "Accept all" or similar.');
+                const acceptSelectors = [
+                    'button[aria-label*="Accept all"]', 'button:has-text("Accept all")',
+                    'button:has-text("Agree to all")', 'button[jsname*="LgbsSe"]', 
+                    'div[role="button"]:has-text("Accept all")'
+                ];
+                let clickedInFrame = false;
+                for (const selector of acceptSelectors) {
+                    if (await consentFrame.locator(selector).click({timeout: 5000, trial: true}).then(() => true).catch(() => false) ) {
+                        logEntry(`Clicked consent button "${selector}" in iframe.`);
+                        await page.waitForTimeout(3000 + Math.random() * 2000); 
+                        clickedInFrame = true; break;
+                    }
+                }
+                if (!clickedInFrame) logEntry('Could not click standard consent buttons in iframe.', 'warn');
+            } else {
+                logEntry('No consent iframe detected. Checking main page for consent buttons.');
+                const mainPageSelectors = [
+                    'button[aria-label*="Accept all"]', 'button[aria-label*="Agree to all"]', 'button:has-text("Accept all")',
+                    'tp-yt-paper-button[aria-label*="Accept all"]', 'ytd-button-renderer:has-text("Accept all") button',
+                    '#dialog footer button.yt-spec-button-shape-next--filled', 
+                    'ytd-consent-bump-v2-lightbox button[aria-label*="Accept"]',
+                    '#lightbox ytd-button-renderer[class*="consent"] button'
+                ];
+                let mainConsentClicked = false;
+                for (const selector of mainPageSelectors) {
+                    if (await clickIfExists(page, selector, 5000, logger)) { 
+                        logEntry(`Clicked main page consent button: ${selector}`);
+                        await page.waitForTimeout(2000 + Math.random() * 1000); 
+                        mainConsentClicked = true;
+                        break;
+                    }
+                }
+                if (!mainConsentClicked) logEntry('No main page consent button clicked.', 'debug');
+            }
+        }
         
         const playerSelector = job.platform === 'youtube' ? '#movie_player video.html5-main-video, ytd-player video' : '.rumble-player-video-wrapper video, video.rumble-player';
-        try { /* ... (player wait as before, with screenshot) ... */ } 
-        catch (videoWaitError) { /* ... (error handling with screenshot) ... */ throw videoWaitError; }
+        try {
+            logEntry(`Waiting for player element (${playerSelector}) to be visible (60s).`);
+            await page.waitForSelector(playerSelector, { state: 'visible', timeout: 60000 });
+            logEntry(`Player element (${playerSelector}) is visible.`);
+        } catch (videoWaitError) {
+            logEntry(`Player element (${playerSelector}) not visible within 60s: ${videoWaitError.message.split('\n')[0]}`, 'error');
+            if (page && ApifyModule.Actor.isAtHome()) {
+                try {
+                    const screenshotBuffer = await page.screenshot({fullPage: true, timeout: 10000});
+                    const key = `SCREENSHOT_PLAYER_FAIL_${job.id.replace(/-/g,'')}`;
+                    if (ApifyModule.Actor.setValue) await ApifyModule.Actor.setValue(key, screenshotBuffer, { contentType: 'image/png' });
+                    logEntry(`Screenshot taken on player wait failure: ${key}`);
+                } catch (screenshotError) {
+                    logEntry(`Failed to take screenshot: ${screenshotError.message}`, 'warn');
+                }
+            }
+            const pageContent = await page.content({timeout: 5000}).catch(() => 'Could not get page content.');
+            logEntry(`Page content sample (first 1000 chars): ${pageContent.substring(0, 1000)}`, 'debug');
+            logEntry(`Current URL: ${page.url()}`, 'debug');
+            logEntry(`Page title: ${await page.title().catch(()=>'N/A')}`, 'debug');
+            throw new Error(`Player element not visible after 60s: ${videoWaitError.message}`);
+        }
 
         const watchResult = await watchVideoOnPage(page, job, effectiveInput, logger); // Pass logger
         Object.assign(jobResult, watchResult);
 
-    } catch (e) { /* ... (error handling with screenshot) ... */ } 
-    finally { /* ... (cleanup as before) ... */ }
+    } catch (e) {
+        logEntry(`Critical error in job ${job.url}: ${e.message}\n${e.stack}`, 'error');
+        jobResult.status = 'failure';
+        jobResult.error = e.message + (e.stack ? `\nStack: ${e.stack}` : '');
+        if (page && typeof page.screenshot === 'function' && ApifyModule.Actor.isAtHome()) { 
+            try {
+                const screenshotBuffer = await page.screenshot({fullPage: true, timeout: 10000});
+                const key = `SCREENSHOT_ERROR_${job.id.replace(/-/g,'')}`;
+                if (ApifyModule.Actor.setValue) await ApifyModule.Actor.setValue(key, screenshotBuffer, { contentType: 'image/png' });
+                logEntry(`Screenshot taken on critical error: ${key}`);
+            } catch (screenshotError) {
+                logEntry(`Failed to take screenshot on critical error: ${screenshotError.message}`, 'warn');
+            }
+        }
+    } finally {
+        if (page && !page.isClosed()) await page.close().catch(e => jobScopedLogger.debug(`Error closing page: ${e.message}`));
+        if (context) await context.close().catch(e => jobScopedLogger.debug(`Error closing context: ${e.message}`));
+        if (browser) await browser.close().catch(e => jobScopedLogger.warning(`Error closing browser: ${e.message}`));
+        jobScopedLogger.info(`Finished job for ${job.url} with status: ${jobResult.status}`);
+    }
     return jobResult;
 }
-// --- End of runSingleJob and its helpers ---
 
 
 async function actorMainLogic() {
@@ -273,7 +503,7 @@ async function actorMainLogic() {
         concurrencyInterval: 5,
         timeout: 120,
         maxSecondsAds: 15,
-        skipAdsAfter: ["5", "10"], // Default as strings
+        skipAdsAfter: ["5", "10"], 
         autoSkipAds: true,
         stopSpawningOnOverload: true,
         useAV1: true,
@@ -285,48 +515,37 @@ async function actorMainLogic() {
     };
 
     const rawInput = input || {}; 
-    const effectiveInput = {}; 
+    const effectiveInput = { ...defaultInput }; 
 
-    // Iterate over defaultInput keys to ensure all are present in effectiveInput
     for (const key of Object.keys(defaultInput)) {
         if (rawInput.hasOwnProperty(key) && rawInput[key] !== undefined && rawInput[key] !== null) {
-            // Special handling for arrays that need parsing or specific default logic
-            if (key === 'videoUrls' || key === 'proxyUrls' || key === 'proxyGroups') {
-                if (Array.isArray(rawInput[key]) && rawInput[key].length > 0) {
+            if ((key === 'videoUrls' || key === 'proxyUrls' || key === 'proxyGroups' || key === 'skipAdsAfter') && Array.isArray(rawInput[key])) {
+                if (rawInput[key].length > 0) {
                     effectiveInput[key] = rawInput[key];
-                } else if (key === 'proxyUrls' && Array.isArray(rawInput[key]) && rawInput[key].length === 0) {
-                    effectiveInput[key] = []; // Allow empty custom proxyUrls from user
-                } else { // Fallback to default if user provides empty array for non-emptyable fields, or invalid type
-                    effectiveInput[key] = defaultInput[key];
+                } else if (key === 'proxyUrls') { 
+                    effectiveInput[key] = [];
                 }
-            } else if (key === 'skipAdsAfter') {
-                 // Defer parsing skipAdsAfter until after this loop to use the correctly determined source (input or default)
-                 effectiveInput[key] = rawInput[key]; // Temporarily assign, will parse below
-            } else { // For all other types (booleans, numbers, strings)
+            } else if (key !== 'skipAdsAfter') { 
                 effectiveInput[key] = rawInput[key];
             }
-        } else {
-            // Key not in rawInput or is null/undefined, so use default
-            effectiveInput[key] = defaultInput[key];
         }
     }
-
-    // Now, parse skipAdsAfter based on what's in effectiveInput (either from user or default)
-    let tempSkipAds = effectiveInput.skipAdsAfter; 
-    if (Array.isArray(tempSkipAds) && tempSkipAds.every(s => typeof s === 'string' || typeof s === 'number')) {
-        effectiveInput.skipAdsAfter = tempSkipAds.map(s => parseInt(String(s), 10)).filter(n => !isNaN(n));
-        // If parsing resulted in an empty array (e.g. user input ["foo", "bar"]), and default had items, use parsed default
+    
+    let tempSkipAdsInput = rawInput.skipAdsAfter; 
+    if (Array.isArray(tempSkipAdsInput) && tempSkipAdsInput.length > 0 && tempSkipAdsInput.every(s => typeof s === 'string' || typeof s === 'number')) {
+        effectiveInput.skipAdsAfter = tempSkipAdsInput.map(s => parseInt(String(s), 10)).filter(n => !isNaN(n));
         if (effectiveInput.skipAdsAfter.length === 0 && defaultInput.skipAdsAfter.length > 0) {
-            GlobalLogger.warning(`User provided 'skipAdsAfter' (${JSON.stringify(tempSkipAds)}) resulted in empty array after parsing. Using default.`);
+            GlobalLogger.warning(`User provided 'skipAdsAfter' (${JSON.stringify(tempSkipAdsInput)}) resulted in empty array after parsing. Using default.`);
             effectiveInput.skipAdsAfter = defaultInput.skipAdsAfter.map(s => parseInt(s,10));
         }
+    } else if (tempSkipAdsInput !== undefined) { 
+        GlobalLogger.warning(`Input 'skipAdsAfter' was not a valid array or was empty. Using default. Received: ${JSON.stringify(tempSkipAdsInput)}`);
+        effectiveInput.skipAdsAfter = defaultInput.skipAdsAfter.map(s => parseInt(s,10));
     } else { 
-        GlobalLogger.warning(`Input 'skipAdsAfter' was not a valid array. Using default. Received: ${JSON.stringify(tempSkipAds)}`);
         effectiveInput.skipAdsAfter = defaultInput.skipAdsAfter.map(s => parseInt(s,10));
     }
     
-    GlobalLogger.info('Effective input settings:', effectiveInput); // Log this *after* full construction
-
+    GlobalLogger.info('Effective input settings:', effectiveInput);
 
     if (!effectiveInput.videoUrls || !Array.isArray(effectiveInput.videoUrls) || effectiveInput.videoUrls.length === 0) {
         GlobalLogger.error('No video URLs provided or resolved after defaults. Exiting.');
@@ -367,16 +586,45 @@ async function actorMainLogic() {
     const activeWorkers = new Set();
     for (let i = 0; i < jobs.length; i++) {
         const job = jobs[i];
-        if (effectiveInput.stopSpawningOnOverload && typeof ApifyModule.Actor.isAtCapacity === 'function' && await ApifyModule.Actor.isAtCapacity()) { /* ... */ break; }
-        while (activeWorkers.size >= effectiveInput.concurrency) { /* ... */ await Promise.race(Array.from(activeWorkers)); }
+        if (effectiveInput.stopSpawningOnOverload && typeof ApifyModule.Actor.isAtCapacity === 'function' && await ApifyModule.Actor.isAtCapacity()) {
+            GlobalLogger.warning('At capacity, pausing for 30s.');
+            await new Promise(r => setTimeout(r, 30000));
+            if (await ApifyModule.Actor.isAtCapacity()) { GlobalLogger.error('Still at capacity. Stopping.'); break; }
+        }
+        while (activeWorkers.size >= effectiveInput.concurrency) {
+            GlobalLogger.debug(`Concurrency limit (${effectiveInput.concurrency}) reached. Waiting... Active: ${activeWorkers.size}`);
+            await Promise.race(Array.from(activeWorkers));
+        }
         
         const jobPromise = runSingleJob(job, effectiveInput, actorProxyConfiguration, effectiveInput.proxyUrls, GlobalLogger)
-            .then(async (result) => { /* ... */ })
-            .catch(async (error) => { /* ... */ })
-            .finally(() => { /* ... */ });
+            .then(async (result) => {
+                overallResults.details.push(result);
+                result.status === 'success' ? overallResults.successfulJobs++ : overallResults.failedJobs++;
+                if (ApifyModule.Actor.pushData) await ApifyModule.Actor.pushData(result);
+            })
+            .catch(async (error) => {
+                GlobalLogger.error(`Unhandled job promise error for ${job.id}: ${error.message}`, { stack: error.stack });
+                const errRes = { 
+                    jobId: job.id, url: job.url, videoId: job.videoId, platform: job.platform, 
+                    status: 'catastrophic_loop_failure', 
+                    error: error.message, 
+                    stack: error.stack, 
+                    log: [`[${new Date().toISOString()}] [ERROR] Unhandled promise: ${error.message}`]
+                };
+                overallResults.details.push(errRes); 
+                overallResults.failedJobs++;
+                if (ApifyModule.Actor.pushData) await ApifyModule.Actor.pushData(errRes);
+            })
+            .finally(() => {
+                activeWorkers.delete(jobPromise);
+                GlobalLogger.info(`Worker slot freed. Active: ${activeWorkers.size}. Job ID ${job.id.substring(0,6)} done.`);
+            });
         activeWorkers.add(jobPromise);
         GlobalLogger.info(`Job ${job.id.substring(0,6)} (${i + 1}/${jobs.length}) dispatched. Active: ${activeWorkers.size}`);
-        if (effectiveInput.concurrencyInterval > 0 && i < jobs.length - 1 && activeWorkers.size < effectiveInput.concurrency) { /* ... */ }
+        if (effectiveInput.concurrencyInterval > 0 && i < jobs.length - 1 && activeWorkers.size < effectiveInput.concurrency) {
+            GlobalLogger.debug(`Concurrency interval: ${effectiveInput.concurrencyInterval}s`);
+            await new Promise(r => setTimeout(r, effectiveInput.concurrencyInterval * 1000));
+        }
     }
     GlobalLogger.info(`All jobs dispatched. Waiting for ${activeWorkers.size} to complete...`);
     await Promise.all(Array.from(activeWorkers));

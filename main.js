@@ -6,19 +6,109 @@ const ApifyModule = require('apify');
 const playwright = require('playwright');
 const { v4: uuidv4 } = require('uuid');
 
-const ANTI_DETECTION_ARGS = [ /* ... as before ... */ ];
+const ANTI_DETECTION_ARGS = [
+    '--disable-blink-features=AutomationControlled',
+    '--disable-features=IsolateOrigins,site-per-process,ImprovedCookieControls,LazyFrameLoading,GlobalMediaControls,DestroyProfileOnBrowserClose,MediaRouter,DialMediaRouteProvider,AcceptCHFrame,AutoExpandDetailsElement,CertificateTransparencyEnforcement,AvoidUnnecessaryBeforeUnloadCheckSync,Translate',
+    '--disable-component-extensions-with-background-pages',
+    '--disable-default-apps',
+    '--disable-extensions',
+    '--disable-site-isolation-trials',
+    '--disable-sync',
+    '--force-webrtc-ip-handling-policy=default_public_interface_only',
+    '--no-first-run',
+    '--no-service-autorun',
+    '--password-store=basic',
+    '--use-mock-keychain',
+    '--enable-precise-memory-info',
+    '--window-size=1920,1080',
+    '--disable-infobars',
+    '--disable-notifications',
+    '--disable-popup-blocking',
+    '--disable-dev-shm-usage', 
+    '--no-sandbox', 
+    '--disable-gpu',
+    '--disable-setuid-sandbox',
+    '--disable-software-rasterizer',
+    '--mute-audio',
+    '--ignore-certificate-errors',
+];
 
 let GlobalLogger; 
 
-async function applyAntiDetectionScripts(pageOrContext) { /* ... as before ... */ }
-function extractVideoId(url) { /* ... as before ... */ }
-async function getVideoDuration(page) { /* ... as before ... */ }
-async function clickIfExists(page, selector, timeout = 3000) { /* ... as before ... */ }
-async function handleAds(page, platform, effectiveInput) { /* ... as before ... */ }
-async function watchVideoOnPage(page, job, effectiveInput) { /* ... (same as previous correct version, ensure it uses GlobalLogger for its internal logs) ... */ }
+async function applyAntiDetectionScripts(pageOrContext) {
+    const script = () => {
+        if (navigator.webdriver === true) Object.defineProperty(navigator, 'webdriver', { get: () => false });
+        if (navigator.languages && !navigator.languages.includes('en-US')) Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
+        if (navigator.language !== 'en-US') Object.defineProperty(navigator, 'language', { get: () => 'en-US' });
+        try {
+            const originalGetParameter = WebGLRenderingContext.prototype.getParameter;
+            WebGLRenderingContext.prototype.getParameter = function (parameter) {
+                if (this.canvas.id === 'webgl-fingerprint-canvas') return originalGetParameter.apply(this, arguments);
+                if (parameter === 37445) return 'Google Inc. (Intel)';
+                if (parameter === 37446) return 'ANGLE (Intel, Intel(R) Iris(TM) Plus Graphics 640, OpenGL 4.1)';
+                return originalGetParameter.apply(this, arguments);
+            };
+        } catch (e) { (GlobalLogger || console).debug('Failed WebGL spoof:', e.message); }
+        try {
+            const originalToDataURL = HTMLCanvasElement.prototype.toDataURL;
+            HTMLCanvasElement.prototype.toDataURL = function() {
+                if (this.id === 'canvas-fingerprint-element') return originalToDataURL.apply(this, arguments);
+                const shift = { r: Math.floor(Math.random()*10)-5, g: Math.floor(Math.random()*10)-5, b: Math.floor(Math.random()*10)-5, a: Math.floor(Math.random()*10)-5 };
+                const ctx = this.getContext('2d');
+                if (ctx && this.width > 0 && this.height > 0) {
+                    try {
+                        const imageData = ctx.getImageData(0,0,this.width,this.height);
+                        for(let i=0; i<imageData.data.length; i+=4){
+                            imageData.data[i] = Math.min(255,Math.max(0,imageData.data[i]+shift.r));
+                            imageData.data[i+1] = Math.min(255,Math.max(0,imageData.data[i+1]+shift.g));
+                            imageData.data[i+2] = Math.min(255,Math.max(0,imageData.data[i+2]+shift.b));
+                            imageData.data[i+3] = Math.min(255,Math.max(0,imageData.data[i+3]+shift.a));
+                        }
+                        ctx.putImageData(imageData,0,0);
+                    } catch(e) { (GlobalLogger || console).debug('Failed Canvas noise:', e.message); }
+                }
+                return originalToDataURL.apply(this, arguments);
+            };
+        } catch (e) { (GlobalLogger || console).debug('Failed Canvas spoof:', e.message); }
+        if (navigator.permissions && typeof navigator.permissions.query === 'function') {
+            const originalPermissionsQuery = navigator.permissions.query;
+            navigator.permissions.query = (parameters) => ( parameters.name === 'notifications' ? Promise.resolve({ state: Notification.permission || 'prompt' }) : originalPermissionsQuery.call(navigator.permissions, parameters) );
+        }
+        if (window.screen) {
+            try {
+                Object.defineProperty(window.screen, 'availWidth', { get: () => 1920, configurable: true });
+                Object.defineProperty(window.screen, 'availHeight', { get: () => 1080, configurable: true });
+                Object.defineProperty(window.screen, 'width', { get: () => 1920, configurable: true });
+                Object.defineProperty(window.screen, 'height', { get: () => 1080, configurable: true });
+                Object.defineProperty(window.screen, 'colorDepth', { get: () => 24, configurable: true });
+                Object.defineProperty(window.screen, 'pixelDepth', { get: () => 24, configurable: true });
+            } catch (e) { (GlobalLogger || console).debug('Failed screen spoof:', e.message); }
+        }
+        try { Date.prototype.getTimezoneOffset = function() { return 5 * 60; }; } catch (e) { (GlobalLogger || console).debug('Failed timezone spoof:', e.message); }
+        if (navigator.plugins) try { Object.defineProperty(navigator, 'plugins', { get: () => [], configurable: true }); } catch(e) { (GlobalLogger || console).debug('Failed plugin spoof:', e.message); }
+        if (navigator.mimeTypes) try { Object.defineProperty(navigator, 'mimeTypes', { get: () => [], configurable: true }); } catch(e) { (GlobalLogger || console).debug('Failed mimeType spoof:', e.message); }
+    };
+    if (pageOrContext.addInitScript) await pageOrContext.addInitScript(script);
+    else await pageOrContext.evaluateOnNewDocument(script);
+}
 
-// Corrected helper functions to use GlobalLogger (ensure it's passed or accessible)
-async function getVideoDuration(page) { // Make sure GlobalLogger is accessible
+function extractVideoId(url) {
+    try {
+        const urlObj = new URL(url);
+        if (url.includes('youtube.com') || url.includes('youtu.be')) {
+            return urlObj.searchParams.get('v') || urlObj.pathname.substring(1);
+        } else if (url.includes('rumble.com')) {
+            const pathParts = urlObj.pathname.split('/');
+            const lastPart = pathParts[pathParts.length - 1];
+            return lastPart.split('-')[0] || lastPart;
+        }
+    } catch (error) {
+        (GlobalLogger || console).error(`Error extracting video ID from URL ${url}: ${error.message}`);
+    }
+    return null;
+}
+
+async function getVideoDuration(page) {
     (GlobalLogger || console).info('Attempting to get video duration.');
     for (let i = 0; i < 15; i++) {
         try {
@@ -39,7 +129,7 @@ async function getVideoDuration(page) { // Make sure GlobalLogger is accessible
     return null;
 }
 
-async function clickIfExists(page, selector, timeout = 3000) { // Make sure GlobalLogger is accessible
+async function clickIfExists(page, selector, timeout = 3000) {
     try {
         const element = page.locator(selector).first();
         await element.waitFor({ state: 'visible', timeout });
@@ -52,7 +142,7 @@ async function clickIfExists(page, selector, timeout = 3000) { // Make sure Glob
     }
 }
 
-async function handleAds(page, platform, effectiveInput) { // Make sure GlobalLogger is accessible
+async function handleAds(page, platform, effectiveInput) {
     (GlobalLogger || console).info('Starting ad handling logic.');
     const adCheckInterval = 3000;
     let adWatchLoop = 0;
@@ -108,7 +198,7 @@ async function watchVideoOnPage(page, job, effectiveInput) {
 
     try {
         logEntry('Handling initial ads.');
-        await handleAds(page, job.platform, effectiveInput); // Pass job.platform
+        await handleAds(page, job.platform, effectiveInput);
         logEntry(`Attempting to play video: ${job.url}`);
         let playButtonSelectors = job.platform === 'youtube' 
             ? ['.ytp-large-play-button', '.ytp-play-button[aria-label*="Play"]', 'video.html5-main-video']
@@ -154,7 +244,7 @@ async function watchVideoOnPage(page, job, effectiveInput) {
 
         for (let i = 0; i < maxWatchLoops; i++) {
             logEntry(`Watch loop ${i+1}/${maxWatchLoops}. Ads check.`);
-            await handleAds(page, job.platform, effectiveInput); // Pass job.platform
+            await handleAds(page, job.platform, effectiveInput); 
             const videoState = await page.evaluate(() => { const v = document.querySelector('video'); return v ? { ct:v.currentTime, p:v.paused, e:v.ended, rs:v.readyState, ns:v.networkState } : null; }).catch(e => { logEntry(`Video state error: ${e.message}`, 'warn'); return null; });
             if (!videoState) throw new Error('Video element disappeared.');
             logEntry(`State: time=${videoState.ct?.toFixed(2)}, paused=${videoState.p}, ended=${videoState.e}, ready=${videoState.rs}, net=${videoState.ns}`);
@@ -181,16 +271,14 @@ async function watchVideoOnPage(page, job, effectiveInput) {
     return jobResult;
 }
 
-
-// Pass GlobalLogger explicitly to runSingleJob
-async function runSingleJob(job, effectiveInput, actorProxyConfiguration, customProxyPool, logger) {
+async function runSingleJob(job, effectiveInput, actorProxyConfiguration, customProxyPool, logger) { // Added logger parameter
     const jobScopedLogger = {
         info: (msg) => logger.info(`[Job ${job.id.substring(0,6)}] ${msg}`),
         warning: (msg) => logger.warning(`[Job ${job.id.substring(0,6)}] ${msg}`),
         error: (msg, data) => logger.error(`[Job ${job.id.substring(0,6)}] ${msg}`, data),
         debug: (msg) => logger.debug(`[Job ${job.id.substring(0,6)}] ${msg}`),
     };
-    jobScopedLogger.info(`Starting job for URL: ${job.url}`); // This was the failing line (line 205 in previous logs)
+    jobScopedLogger.info(`Starting job for URL: ${job.url}`);
     let browser;
     let context;
     let page;
@@ -245,7 +333,7 @@ async function runSingleJob(job, effectiveInput, actorProxyConfiguration, custom
             viewport: { width: 1280 + Math.floor(Math.random() * 200), height: 720 + Math.floor(Math.random() * 100) },
             locale: 'en-US', timezoneId: 'America/New_York', javaScriptEnabled: true,
         });
-        await applyAntiDetectionScripts(context); // Pass context
+        await applyAntiDetectionScripts(context);
         page = await context.newPage();
         await page.setViewportSize({ width: 1200 + Math.floor(Math.random()*120), height: 700 + Math.floor(Math.random()*80) });
 
@@ -298,12 +386,16 @@ async function runSingleJob(job, effectiveInput, actorProxyConfiguration, custom
                     'ytd-consent-bump-v2-lightbox button[aria-label*="Accept"]',
                     '#lightbox ytd-button-renderer[class*="consent"] button'
                 ];
+                let mainConsentClicked = false;
                 for (const selector of mainPageSelectors) {
-                    if (await clickIfExists(page, selector, 5000)) { // clickIfExists uses GlobalLogger
+                    if (await clickIfExists(page, selector, 5000)) { 
                         logEntry(`Clicked main page consent button: ${selector}`);
-                        await page.waitForTimeout(2000 + Math.random() * 1000); break;
+                        await page.waitForTimeout(2000 + Math.random() * 1000); 
+                        mainConsentClicked = true;
+                        break;
                     }
                 }
+                if (!mainConsentClicked) logEntry('No main page consent button clicked.', 'debug');
             }
         }
         
@@ -357,6 +449,7 @@ async function runSingleJob(job, effectiveInput, actorProxyConfiguration, custom
     return jobResult;
 }
 
+
 async function actorMainLogic() {
     console.log('ACTOR_MAIN_LOGIC: Entered main logic function.');
     await ApifyModule.Actor.init();
@@ -384,37 +477,142 @@ async function actorMainLogic() {
     GlobalLogger.info('Actor input received.');
     GlobalLogger.debug('Raw input object:', input);
 
-    const defaultInput = { /* ... as before ... */ };
-    const rawInput = input || {};
-    const effectiveInput = { ...defaultInput };
-    for (const key in defaultInput) { /* ... (robust input merging as before) ... */ }
-    if (!Array.isArray(effectiveInput.skipAdsAfter) || !effectiveInput.skipAdsAfter.every(n => typeof n === 'number')) {
-        effectiveInput.skipAdsAfter = defaultInput.skipAdsAfter.map(s => parseInt(s,10));
+    const defaultInput = {
+        videoUrls: ['https://www.youtube.com/watch?v=dQw4w9WgXcQ'],
+        watchTimePercentage: 80,
+        useProxies: true,
+        proxyUrls: [],
+        proxyCountry: null,
+        proxyGroups: ['RESIDENTIAL'],
+        headless: true,
+        concurrency: 1,
+        concurrencyInterval: 5,
+        timeout: 120,
+        maxSecondsAds: 15,
+        skipAdsAfter: ["5", "10"], // Keep as strings for consistent default definition
+        autoSkipAds: true,
+        stopSpawningOnOverload: true,
+        useAV1: true,
+        disableProxyTests: false,
+        enableEngagement: false,
+        leaveComment: false,
+        performLike: false,
+        subscribeToChannel: false
+    };
+
+    const rawInput = input || {}; // Ensure rawInput is an object
+    const effectiveInput = { ...defaultInput }; // Start with defaults
+
+    // Override with user input if valid
+    for (const key of Object.keys(defaultInput)) {
+        if (rawInput.hasOwnProperty(key) && rawInput[key] !== undefined && rawInput[key] !== null) {
+            if ((key === 'videoUrls' || key === 'proxyUrls' || key === 'proxyGroups' || key === 'skipAdsAfter') && Array.isArray(rawInput[key])) {
+                if (rawInput[key].length > 0) {
+                    effectiveInput[key] = rawInput[key];
+                } else if (key === 'proxyUrls') { // Allow empty custom proxyUrls
+                    effectiveInput[key] = [];
+                }
+                // If other array inputs are empty but provided, they'll keep default (or be handled post-loop for skipAdsAfter)
+            } else if (key !== 'skipAdsAfter') { // Defer skipAdsAfter parsing
+                effectiveInput[key] = rawInput[key];
+            }
+        }
     }
 
-    if (!effectiveInput.videoUrls || effectiveInput.videoUrls.length === 0) { /* ... */ }
+    // Ensure skipAdsAfter is always an array of numbers
+    let tempSkipAds = effectiveInput.skipAdsAfter; // This will be the array from input or default (still strings)
+    if (Array.isArray(tempSkipAds) && tempSkipAds.every(s => typeof s === 'string' || typeof s === 'number')) {
+        effectiveInput.skipAdsAfter = tempSkipAds.map(s => parseInt(String(s), 10)).filter(n => !isNaN(n));
+        if (effectiveInput.skipAdsAfter.length === 0 && defaultInput.skipAdsAfter.length > 0) {
+            // If parsing user input resulted in empty or all invalid, revert to default parsed
+            effectiveInput.skipAdsAfter = defaultInput.skipAdsAfter.map(s => parseInt(s,10));
+        }
+    } else { // If not an array or mixed types, fall back to default
+        GlobalLogger.warning(`Input 'skipAdsAfter' was not a valid array. Using default. Received: ${JSON.stringify(tempSkipAds)}`);
+        effectiveInput.skipAdsAfter = defaultInput.skipAdsAfter.map(s => parseInt(s,10));
+    }
+    
+
+    if (!effectiveInput.videoUrls || !Array.isArray(effectiveInput.videoUrls) || effectiveInput.videoUrls.length === 0) {
+        GlobalLogger.error('No video URLs provided or resolved after defaults. Exiting.');
+        if (ApifyModule.Actor.fail) await ApifyModule.Actor.fail('Missing videoUrls in input.'); 
+        return;
+    }
     GlobalLogger.info('Effective input settings:', effectiveInput);
+
+
     let actorProxyConfiguration = null;
-    if (effectiveInput.useProxies && (!effectiveInput.proxyUrls || effectiveInput.proxyUrls.length === 0)) { /* ... */ }
-    const jobs = effectiveInput.videoUrls.map(url => { /* ... */ }).filter(job => job !== null);
-    if (jobs.length === 0) { /* ... */ }
+    if (effectiveInput.useProxies && (!effectiveInput.proxyUrls || effectiveInput.proxyUrls.length === 0)) {
+        const opts = { groups: effectiveInput.proxyGroups };
+        if (effectiveInput.proxyCountry && effectiveInput.proxyCountry.trim() !== "") opts.countryCode = effectiveInput.proxyCountry;
+        actorProxyConfiguration = await ApifyModule.Actor.createProxyConfiguration(opts);
+        GlobalLogger.info(`Apify Proxy Configuration created. Country: ${effectiveInput.proxyCountry || 'Any'}`);
+    } else if (effectiveInput.useProxies && effectiveInput.proxyUrls && effectiveInput.proxyUrls.length > 0) {
+        GlobalLogger.info(`Using ${effectiveInput.proxyUrls.length} custom proxies.`);
+    }
+
+    const jobs = effectiveInput.videoUrls.map(url => {
+        const videoId = extractVideoId(url);
+        if (!videoId) { GlobalLogger.warning(`Invalid URL (no ID): ${url}. Skipping.`); return null; }
+        const platform = url.includes('youtube.com')||url.includes('youtu.be') ? 'youtube' : (url.includes('rumble.com') ? 'rumble' : 'unknown');
+        if (platform === 'unknown') { GlobalLogger.warning(`Unknown platform: ${url}. Skipping.`); return null; }
+        return { id: uuidv4(), url, videoId, platform };
+    }).filter(job => job !== null);
+
+    if (jobs.length === 0) {
+        GlobalLogger.error('No valid jobs after filtering. Exiting.');
+        if (ApifyModule.Actor.fail) await ApifyModule.Actor.fail('No valid video URLs to process.'); 
+        return;
+    }
     GlobalLogger.info(`Created ${jobs.length} valid jobs to process.`);
-    const overallResults = { /* ... */ };
+    
+    const overallResults = {
+        totalJobs: jobs.length, successfulJobs: 0, failedJobs: 0,
+        details: [], startTime: new Date().toISOString(), endTime: null,
+    };
 
     const activeWorkers = new Set();
     for (let i = 0; i < jobs.length; i++) {
         const job = jobs[i];
-        if (effectiveInput.stopSpawningOnOverload && typeof ApifyModule.Actor.isAtCapacity === 'function' && await ApifyModule.Actor.isAtCapacity()) { /* ... */ break; }
-        while (activeWorkers.size >= effectiveInput.concurrency) { /* ... */ await Promise.race(Array.from(activeWorkers)); }
+        if (effectiveInput.stopSpawningOnOverload && typeof ApifyModule.Actor.isAtCapacity === 'function' && await ApifyModule.Actor.isAtCapacity()) {
+            GlobalLogger.warning('At capacity, pausing for 30s.');
+            await new Promise(r => setTimeout(r, 30000));
+            if (await ApifyModule.Actor.isAtCapacity()) { GlobalLogger.error('Still at capacity. Stopping.'); break; }
+        }
+        while (activeWorkers.size >= effectiveInput.concurrency) {
+            GlobalLogger.debug(`Concurrency limit (${effectiveInput.concurrency}) reached. Waiting... Active: ${activeWorkers.size}`);
+            await Promise.race(Array.from(activeWorkers));
+        }
         
-        // Pass GlobalLogger to runSingleJob
         const jobPromise = runSingleJob(job, effectiveInput, actorProxyConfiguration, effectiveInput.proxyUrls, GlobalLogger)
-            .then(async (result) => { /* ... */ })
-            .catch(async (error) => { /* ... */ })
-            .finally(() => { /* ... */ });
+            .then(async (result) => {
+                overallResults.details.push(result);
+                result.status === 'success' ? overallResults.successfulJobs++ : overallResults.failedJobs++;
+                if (ApifyModule.Actor.pushData) await ApifyModule.Actor.pushData(result);
+            })
+            .catch(async (error) => {
+                GlobalLogger.error(`Unhandled job promise error for ${job.id}: ${error.message}`, { stack: error.stack });
+                const errRes = { 
+                    jobId: job.id, url: job.url, videoId: job.videoId, platform: job.platform, 
+                    status: 'catastrophic_loop_failure', 
+                    error: error.message, 
+                    stack: error.stack, 
+                    log: [`[${new Date().toISOString()}] [ERROR] Unhandled promise: ${error.message}`]
+                };
+                overallResults.details.push(errRes); 
+                overallResults.failedJobs++;
+                if (ApifyModule.Actor.pushData) await ApifyModule.Actor.pushData(errRes);
+            })
+            .finally(() => {
+                activeWorkers.delete(jobPromise);
+                GlobalLogger.info(`Worker slot freed. Active: ${activeWorkers.size}. Job ID ${job.id.substring(0,6)} done.`);
+            });
         activeWorkers.add(jobPromise);
         GlobalLogger.info(`Job ${job.id.substring(0,6)} (${i + 1}/${jobs.length}) dispatched. Active: ${activeWorkers.size}`);
-        if (effectiveInput.concurrencyInterval > 0 && i < jobs.length - 1 && activeWorkers.size < effectiveInput.concurrency) { /* ... */ }
+        if (effectiveInput.concurrencyInterval > 0 && i < jobs.length - 1 && activeWorkers.size < effectiveInput.concurrency) {
+            GlobalLogger.debug(`Concurrency interval: ${effectiveInput.concurrencyInterval}s`);
+            await new Promise(r => setTimeout(r, effectiveInput.concurrencyInterval * 1000));
+        }
     }
     GlobalLogger.info(`All jobs dispatched. Waiting for ${activeWorkers.size} to complete...`);
     await Promise.all(Array.from(activeWorkers));
@@ -426,5 +624,11 @@ async function actorMainLogic() {
 
 if (ApifyModule.Actor && typeof ApifyModule.Actor.main === 'function') {
     ApifyModule.Actor.main(actorMainLogic);
-} else { /* ... */ }
+} else {
+    console.error('CRITICAL: Apify.Actor.main is not defined. Running actorMainLogic directly.');
+    actorMainLogic().catch(err => {
+        console.error('CRITICAL: Error in direct actorMainLogic execution:', err);
+        process.exit(1);
+    });
+}
 console.log('MAIN.JS: Script fully loaded and main execution path determined.');

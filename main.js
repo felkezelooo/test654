@@ -181,6 +181,54 @@ async function handleAds(page, platform, effectiveInput, loggerToUse = GlobalLog
     (loggerToUse || console).info('Ad handling finished or timed out.');
 }
 
+async function ensureVideoPlaying(page, playButtonSelectors, logEntry) {
+    logEntry('Ensuring video is playing...');
+    for (let attempt = 0; attempt < 3; attempt++) {
+        const isPaused = await page.evaluate(() => {
+            const video = document.querySelector('video.html5-main-video, video.rumble-player-video');
+            if (video) {
+                if (video.paused) {
+                    // Attempt to play directly in page context
+                    video.play().catch(e => console.warn('Direct video.play() in evaluate failed:', e.message)); 
+                }
+                return video.paused;
+            }
+            return true; // Assume paused if no video element
+        }).catch(e => { logEntry(`Error evaluating video state for play: ${e.message}`, 'warn'); return true; });
+
+        if (!isPaused) {
+            logEntry(`Video is playing (attempt ${attempt + 1}).`);
+            return true;
+        }
+
+        logEntry(`Video is paused (attempt ${attempt + 1}), trying to click play buttons.`);
+        for (const selector of playButtonSelectors) {
+            if (await clickIfExists(page, selector, 1500, {info: logEntry, debug: logEntry, warning: logEntry, error: logEntry })) { // Pass a compatible logger
+                logEntry(`Clicked play button: ${selector}`);
+                await page.waitForTimeout(500); // Give it a moment to react
+                const stillPaused = await page.evaluate(() => document.querySelector('video')?.paused);
+                if (!stillPaused) {
+                    logEntry('Video started playing after click.');
+                    return true;
+                }
+            }
+        }
+        // Fallback: click the video element itself
+        logEntry('Trying to click video element directly to play.');
+        await page.locator('video').first().click({ timeout: 2000, force: true, trial: true }).catch(e => logEntry(`Failed to click video element (trial): ${e.message}`, 'warn'));
+        await page.waitForTimeout(500);
+        const finalCheckPaused = await page.evaluate(() => document.querySelector('video')?.paused);
+        if (!finalCheckPaused) {
+            logEntry('Video started playing after general video click.');
+            return true;
+        }
+        if (attempt < 2) await page.waitForTimeout(1000); // Wait before retrying
+    }
+    logEntry('Failed to ensure video is playing after multiple attempts.', 'warn');
+    return false;
+}
+
+
 async function watchVideoOnPage(page, job, effectiveInput, loggerToUse = GlobalLogger) { 
     const jobResult = {
         jobId: job.id, url: job.url, videoId: job.videoId, platform: job.platform, status: 'pending',
@@ -197,32 +245,12 @@ async function watchVideoOnPage(page, job, effectiveInput, loggerToUse = GlobalL
         logEntry('Handling initial ads.');
         await handleAds(page, job.platform, effectiveInput, loggerToUse);
         logEntry(`Attempting to play video: ${job.url}`);
-        let playButtonSelectors = job.platform === 'youtube' 
+        
+        const playButtonSelectors = job.platform === 'youtube' 
             ? ['.ytp-large-play-button', '.ytp-play-button[aria-label*="Play"]', 'video.html5-main-video']
             : ['.rumbles-player-play-button', 'video.rumble-player-video'];
         
-        let played = false;
-        for (let attempt = 0; attempt < 3; attempt++) {
-            for (const selector of playButtonSelectors) {
-                if (await clickIfExists(page, selector, 2000, loggerToUse)) { played = true; logEntry(`Clicked play button: ${selector} on attempt ${attempt + 1}`); break; }
-            }
-            if (played) break;
-            logEntry(`Play button click attempt ${attempt + 1} failed, checking if video is already playing or trying general video click.`);
-            const isPaused = await page.evaluate(() => document.querySelector('video')?.paused);
-            if (isPaused === false) { played = true; logEntry('Video appears to be already playing.'); break; }
-            if(attempt < 2) await page.waitForTimeout(1000); 
-        }
-
-        if (!played) {
-             logEntry('No specific play button worked or video not auto-playing, attempting to click video element directly.');
-             await page.locator('video').first().click({timeout: 5000, force: true, trial: true}).catch(e => logEntry(`Failed to click video (trial): ${e.message}`, 'warn'));
-             const isPausedAfterGeneralClick = await page.evaluate(() => document.querySelector('video')?.paused);
-             if (isPausedAfterGeneralClick === false) {
-                logEntry('Video started playing after general video click.');
-             } else {
-                logEntry('Video still not playing after all attempts.', 'warn');
-             }
-        }
+        await ensureVideoPlaying(page, playButtonSelectors, logEntry);
         
         await page.evaluate(() => { const v = document.querySelector('video'); if(v) { v.muted=false; v.volume=0.05+Math.random()*0.1; }}).catch(e => logEntry(`Unmute/volume failed: ${e.message}`, 'debug'));
 
@@ -237,23 +265,41 @@ async function watchVideoOnPage(page, job, effectiveInput, loggerToUse = GlobalL
 
         let currentActualWatchTime = 0;
         const watchIntervalMs = 5000;
-        const maxWatchLoops = Math.ceil(targetWatchTimeSec / (watchIntervalMs / 1000)) + 12;
+        const maxWatchLoops = Math.ceil(targetWatchTimeSec / (watchIntervalMs / 1000)) + 12; // +12 loops (1 min) for buffer
 
         for (let i = 0; i < maxWatchLoops; i++) {
             logEntry(`Watch loop ${i+1}/${maxWatchLoops}. Ads check.`);
             await handleAds(page, job.platform, effectiveInput, loggerToUse); 
             const videoState = await page.evaluate(() => { const v = document.querySelector('video'); return v ? { ct:v.currentTime, p:v.paused, e:v.ended, rs:v.readyState, ns:v.networkState } : null; }).catch(e => { logEntry(`Video state error: ${e.message}`, 'warn'); return null; });
-            if (!videoState) throw new Error('Video element disappeared.');
-            logEntry(`State: time=${videoState.ct?.toFixed(2)}, paused=${videoState.p}, ended=${videoState.e}, ready=${videoState.rs}, net=${videoState.ns}`);
-            if (videoState.p && !videoState.e) {
-                logEntry('Paused, trying to play.');
-                for (const sel of playButtonSelectors) if (await clickIfExists(page, sel, 2000, loggerToUse)) break;
-                await page.locator('video').first().click({timeout:2000, force: true, trial: true}).catch(e => logEntry(`Fallback click failed: ${e.message}`, 'debug'));
+            
+            if (!videoState) {
+                 // Try to recover if video element temporarily not found (e.g. during ad transition)
+                logEntry('Video element not found in evaluate, attempting to find again.', 'warn');
+                await page.waitForTimeout(1000);
+                const videoExists = await page.locator('video').count() > 0;
+                if (!videoExists) throw new Error('Video element disappeared definitively.');
+                continue; // Retry loop
             }
+
+            logEntry(`State: time=${videoState.ct?.toFixed(2)}, paused=${videoState.p}, ended=${videoState.e}, ready=${videoState.rs}, net=${videoState.ns}`);
+            
+            if (videoState.p && !videoState.e) {
+                logEntry('Video is paused, attempting to ensure it plays.');
+                await ensureVideoPlaying(page, playButtonSelectors, logEntry);
+            }
+            
             currentActualWatchTime = videoState.ct || 0;
             jobResult.watchTimeActualSec = currentActualWatchTime;
-            if (currentActualWatchTime >= targetWatchTimeSec || videoState.e) { logEntry(`Target/end. Actual: ${currentActualWatchTime.toFixed(2)}s`); break; }
-            if (i%6===0) { await page.mouse.move(Math.random()*500,Math.random()*300,{steps:5}).catch(()=>{}); logEntry('Mouse move.','debug');}
+            
+            if (currentActualWatchTime >= targetWatchTimeSec || videoState.e) { 
+                logEntry(`Target watch time reached or video ended. Actual: ${currentActualWatchTime.toFixed(2)}s`); 
+                break; 
+            }
+            
+            if (i % 6 === 0) { // Simulate mouse move every ~30s
+                 await page.mouse.move(Math.random()*500,Math.random()*300,{steps:5}).catch(()=>{}); 
+                 logEntry('Simulated mouse move.','debug');
+            }
             await page.waitForTimeout(watchIntervalMs);
         }
         if (currentActualWatchTime < targetWatchTimeSec) logEntry(`Watched ${currentActualWatchTime.toFixed(2)}s < target ${targetWatchTimeSec.toFixed(2)}s.`, 'warn');
@@ -267,6 +313,7 @@ async function watchVideoOnPage(page, job, effectiveInput, loggerToUse = GlobalL
     }
     return jobResult;
 }
+
 
 async function runSingleJob(job, effectiveInput, actorProxyConfiguration, customProxyPool, logger) {
     const jobScopedLogger = {
@@ -441,16 +488,13 @@ async function runSingleJob(job, effectiveInput, actorProxyConfiguration, custom
                     'ytd-consent-bump-v2-lightbox button[aria-label*="Accept"]',
                     '#lightbox ytd-button-renderer[class*="consent"] button'
                 ];
-                let mainConsentClicked = false;
                 for (const selector of mainPageSelectors) {
                     if (await clickIfExists(page, selector, 5000, logger)) { 
                         logEntry(`Clicked main page consent button: ${selector}`);
                         await page.waitForTimeout(2000 + Math.random() * 1000); 
-                        mainConsentClicked = true;
                         break;
                     }
                 }
-                if (!mainConsentClicked) logEntry('No main page consent button clicked.', 'debug');
             }
         }
         
@@ -533,10 +577,10 @@ async function actorMainLogic() {
     GlobalLogger.debug('Raw input object:', input);
 
     const defaultInput = {
-        videoUrls: ['https://www.youtube.com/watch?v=dQw4w9WgXcQ'], // Simple array for default
-        watchTypes: ['direct'], // Parallel array default
-        refererUrls: [''], // Parallel array default
-        searchKeywordsForEachVideo: ['default keyword, another default'], // Parallel array default
+        videoUrls: ['https://www.youtube.com/watch?v=dQw4w9WgXcQ'],
+        watchTypes: ['direct'],
+        refererUrls: [''],
+        searchKeywordsForEachVideo: ['default keyword, another default'],
         watchTimePercentage: 80,
         useProxies: true,
         proxyUrls: [],
@@ -570,8 +614,6 @@ async function actorMainLogic() {
                            (key === 'proxyUrls' || key === 'watchTypes' || key === 'refererUrls' || key === 'searchKeywordsForEachVideo')) {
                     effectiveInput[key] = [];
                 }
-                // If videoUrls or skipAdsAfter are empty from user, they'll keep the default from the initial spread.
-                // skipAdsAfter will be parsed further down.
             } else { 
                 effectiveInput[key] = rawInput[key];
             }
@@ -652,16 +694,45 @@ async function actorMainLogic() {
     const activeWorkers = new Set();
     for (let i = 0; i < jobs.length; i++) {
         const job = jobs[i];
-        if (effectiveInput.stopSpawningOnOverload && typeof ApifyModule.Actor.isAtCapacity === 'function' && await ApifyModule.Actor.isAtCapacity()) { /* ... */ break; }
-        while (activeWorkers.size >= effectiveInput.concurrency) { /* ... */ await Promise.race(Array.from(activeWorkers)); }
+        if (effectiveInput.stopSpawningOnOverload && typeof ApifyModule.Actor.isAtCapacity === 'function' && await ApifyModule.Actor.isAtCapacity()) {
+            GlobalLogger.warning('At capacity, pausing for 30s.');
+            await new Promise(r => setTimeout(r, 30000));
+            if (await ApifyModule.Actor.isAtCapacity()) { GlobalLogger.error('Still at capacity. Stopping.'); break; }
+        }
+        while (activeWorkers.size >= effectiveInput.concurrency) {
+            GlobalLogger.debug(`Concurrency limit (${effectiveInput.concurrency}) reached. Waiting... Active: ${activeWorkers.size}`);
+            await Promise.race(Array.from(activeWorkers));
+        }
         
         const jobPromise = runSingleJob(job, effectiveInput, actorProxyConfiguration, effectiveInput.proxyUrls, GlobalLogger)
-            .then(async (result) => { /* ... */ })
-            .catch(async (error) => { /* ... */ })
-            .finally(() => { /* ... */ });
+            .then(async (result) => {
+                overallResults.details.push(result);
+                result.status === 'success' ? overallResults.successfulJobs++ : overallResults.failedJobs++;
+                if (ApifyModule.Actor.pushData) await ApifyModule.Actor.pushData(result);
+            })
+            .catch(async (error) => {
+                GlobalLogger.error(`Unhandled job promise error for ${job.id}: ${error.message}`, { stack: error.stack });
+                const errRes = { 
+                    jobId: job.id, url: job.url, videoId: job.videoId, platform: job.platform, 
+                    status: 'catastrophic_loop_failure', 
+                    error: error.message, 
+                    stack: error.stack, 
+                    log: [`[${new Date().toISOString()}] [ERROR] Unhandled promise: ${error.message}`]
+                };
+                overallResults.details.push(errRes); 
+                overallResults.failedJobs++;
+                if (ApifyModule.Actor.pushData) await ApifyModule.Actor.pushData(errRes);
+            })
+            .finally(() => {
+                activeWorkers.delete(jobPromise);
+                GlobalLogger.info(`Worker slot freed. Active: ${activeWorkers.size}. Job ID ${job.id.substring(0,6)} done.`);
+            });
         activeWorkers.add(jobPromise);
         GlobalLogger.info(`Job ${job.id.substring(0,6)} (${i + 1}/${jobs.length}) dispatched. WatchType: ${job.watchType}. Active: ${activeWorkers.size}`);
-        if (effectiveInput.concurrencyInterval > 0 && i < jobs.length - 1 && activeWorkers.size < effectiveInput.concurrency) { /* ... */ }
+        if (effectiveInput.concurrencyInterval > 0 && i < jobs.length - 1 && activeWorkers.size < effectiveInput.concurrency) {
+            GlobalLogger.debug(`Concurrency interval: ${effectiveInput.concurrencyInterval}s`);
+            await new Promise(r => setTimeout(r, effectiveInput.concurrencyInterval * 1000));
+        }
     }
     GlobalLogger.info(`All jobs dispatched. Waiting for ${activeWorkers.size} to complete...`);
     await Promise.all(Array.from(activeWorkers));

@@ -358,64 +358,152 @@ async function runSingleJob(job, effectiveInput, actorProxyConfiguration, custom
 
         if (job.watchType === 'search' && job.searchKeywords && job.searchKeywords.length > 0) {
             const keyword = job.searchKeywords[Math.floor(Math.random() * job.searchKeywords.length)];
-            logEntry(`Performing search for keyword: "${keyword}" to find video: ${job.url}`);
+            logEntry(`Performing search for keyword: "${keyword}" to find video ID: ${job.videoId}`);
             const searchUrl = job.platform === 'youtube' ? `https://www.youtube.com/results?search_query=${encodeURIComponent(keyword)}` : `https://rumble.com/search/video?q=${encodeURIComponent(keyword)}`;
             
             logEntry(`Navigating to search results: ${searchUrl}`);
             await page.goto(searchUrl, { timeout: effectiveInput.timeout * 1000, waitUntil: 'domcontentloaded' });
-            logEntry('Search results page loaded.');
-            await page.waitForLoadState('networkidle', { timeout: 20000 }).catch(() => logEntry('Network idle timed out on search page, proceeding.', 'warn'));
+            logEntry('Search results page loaded (domcontentloaded).');
+            try {
+                await page.waitForLoadState('networkidle', { timeout: 20000 });
+                logEntry('Network idle on search page.');
+            } catch (e) {
+                logEntry(`Network idle timed out on search page, proceeding. Error: ${e.message.split('\n')[0]}`, 'warn');
+            }
 
-            // Try to find the video link
-            // This needs to be robust: check titles, channel, etc.
-            // For simplicity, we'll look for a link containing the video ID.
             const videoLinkSelector = job.platform === 'youtube' 
-                ? `a[href*="watch?v=${job.videoId}"]` 
-                : `a[href*="${job.videoId}"]`; // Rumble links can be different
+                ? `a#video-title[href*="/watch?v=${job.videoId}"], a[href*="/watch?v=${job.videoId}"]` 
+                : `a.video-item--a[href*="${job.videoId}"]`; 
 
             logEntry(`Looking for video link with selector: ${videoLinkSelector}`);
             const videoLink = page.locator(videoLinkSelector).first();
             
             try {
-                await videoLink.waitFor({ state: 'visible', timeout: 30000 });
+                await videoLink.waitFor({ state: 'visible', timeout: 45000 });
                 logEntry('Video link found in search results. Clicking...');
-                await videoLink.click();
+                await videoLink.click({timeout: 10000});
                 logEntry('Clicked video link. Waiting for navigation to video page...');
-                await page.waitForURL(`**/*${job.videoId}*`, { timeout: 30000, waitUntil: 'domcontentloaded' });
+                await page.waitForURL(`**/*${job.videoId}*`, { timeout: 45000, waitUntil: 'domcontentloaded' });
                 logEntry(`Navigated to video page: ${page.url()}`);
             } catch (searchError) {
-                logEntry(`Could not find or click video link for "${keyword}" within 30s. Error: ${searchError.message}`, 'error');
-                const screenshotBuffer = await page.screenshot({fullPage: true, timeout:10000}).catch(() => null);
-                if (screenshotBuffer && ApifyModule.Actor.isAtHome()) await ApifyModule.Actor.setValue(`SCREENSHOT_SEARCH_FAIL_${job.id.replace(/-/g,'')}`, screenshotBuffer, {contentType: 'image/png'});
+                logEntry(`Could not find or click video link for "${keyword}" (ID: ${job.videoId}). Error: ${searchError.message.split('\n')[0]}`, 'error');
+                if (page && ApifyModule.Actor.isAtHome()) { /* ... screenshot logic ... */ }
                 throw new Error(`Failed to find video via search: ${searchError.message}`);
             }
-        } else {
-            logEntry(`Navigating directly to ${job.url} (or via referer) with waitUntil: 'domcontentloaded' (timeout ${effectiveInput.timeout}s).`);
+        } else { 
+            logEntry(`Navigating (direct/referer) to ${job.url} with waitUntil: 'domcontentloaded' (timeout ${effectiveInput.timeout}s).`);
             await page.goto(job.url, { timeout: effectiveInput.timeout * 1000, waitUntil: 'domcontentloaded' });
             logEntry(`Initial navigation to ${job.url} (domcontentloaded) complete.`);
         }
         
         try {
-            logEntry('Waiting for network idle (up to 30s)...');
+            logEntry('Waiting for network idle (up to 30s after navigation/search click)...');
             await page.waitForLoadState('networkidle', { timeout: 30000 });
             logEntry('Network is idle.');
         } catch(e) {
             logEntry(`Network did not become idle within 30s: ${e.message.split('\n')[0]}. Proceeding anyway.`, 'warn');
         }
 
-        if (job.platform === 'youtube') { /* ... (consent handling as before) ... */ }
+        if (job.platform === 'youtube') {
+            logEntry('Checking for YouTube consent dialog...');
+            const consentFrameSelectors = ['iframe[src*="consent.google.com"]', 'iframe[src*="consent.youtube.com"]'];
+            let consentFrame;
+            for (const frameSelector of consentFrameSelectors) {
+                const frameHandle = await page.waitForSelector(frameSelector, {timeout: 7000}).catch(() => null);
+                if (frameHandle) {
+                    consentFrame = await frameHandle.contentFrame();
+                    if (consentFrame) { logEntry(`Consent iframe found with selector: ${frameSelector}`); break; }
+                }
+            }
+
+            if (consentFrame) {
+                logEntry('Consent iframe content frame obtained. Attempting to click "Accept all" or similar.');
+                const acceptSelectors = [
+                    'button[aria-label*="Accept all"]', 'button:has-text("Accept all")',
+                    'button:has-text("Agree to all")', 'button[jsname*="LgbsSe"]', 
+                    'div[role="button"]:has-text("Accept all")'
+                ];
+                let clickedInFrame = false;
+                for (const selector of acceptSelectors) {
+                    if (await consentFrame.locator(selector).click({timeout: 5000, trial: true}).then(() => true).catch(() => false) ) {
+                        logEntry(`Clicked consent button "${selector}" in iframe.`);
+                        await page.waitForTimeout(3000 + Math.random() * 2000); 
+                        clickedInFrame = true; break;
+                    }
+                }
+                if (!clickedInFrame) logEntry('Could not click standard consent buttons in iframe.', 'warn');
+            } else {
+                logEntry('No consent iframe detected. Checking main page for consent buttons.');
+                const mainPageSelectors = [
+                    'button[aria-label*="Accept all"]', 'button[aria-label*="Agree to all"]', 'button:has-text("Accept all")',
+                    'tp-yt-paper-button[aria-label*="Accept all"]', 'ytd-button-renderer:has-text("Accept all") button',
+                    '#dialog footer button.yt-spec-button-shape-next--filled', 
+                    'ytd-consent-bump-v2-lightbox button[aria-label*="Accept"]',
+                    '#lightbox ytd-button-renderer[class*="consent"] button'
+                ];
+                let mainConsentClicked = false;
+                for (const selector of mainPageSelectors) {
+                    if (await clickIfExists(page, selector, 5000, logger)) { 
+                        logEntry(`Clicked main page consent button: ${selector}`);
+                        await page.waitForTimeout(2000 + Math.random() * 1000); 
+                        mainConsentClicked = true;
+                        break;
+                    }
+                }
+                if (!mainConsentClicked) logEntry('No main page consent button clicked.', 'debug');
+            }
+        }
         
         const playerSelector = job.platform === 'youtube' ? '#movie_player video.html5-main-video, ytd-player video' : '.rumble-player-video-wrapper video, video.rumble-player';
-        try { /* ... (player wait as before, with screenshot) ... */ } 
-        catch (videoWaitError) { /* ... (error handling with screenshot) ... */ throw videoWaitError; }
+        try {
+            logEntry(`Waiting for player element (${playerSelector}) to be visible (60s).`);
+            await page.waitForSelector(playerSelector, { state: 'visible', timeout: 60000 });
+            logEntry(`Player element (${playerSelector}) is visible.`);
+        } catch (videoWaitError) {
+            logEntry(`Player element (${playerSelector}) not visible within 60s: ${videoWaitError.message.split('\n')[0]}`, 'error');
+            if (page && ApifyModule.Actor.isAtHome()) {
+                try {
+                    const screenshotBuffer = await page.screenshot({fullPage: true, timeout: 10000});
+                    const key = `SCREENSHOT_PLAYER_FAIL_${job.id.replace(/-/g,'')}`;
+                    if (ApifyModule.Actor.setValue) await ApifyModule.Actor.setValue(key, screenshotBuffer, { contentType: 'image/png' });
+                    logEntry(`Screenshot taken on player wait failure: ${key}`);
+                } catch (screenshotError) {
+                    logEntry(`Failed to take screenshot: ${screenshotError.message}`, 'warn');
+                }
+            }
+            const pageContent = await page.content({timeout: 5000}).catch(() => 'Could not get page content.');
+            logEntry(`Page content sample (first 1000 chars): ${pageContent.substring(0, 1000)}`, 'debug');
+            logEntry(`Current URL: ${page.url()}`, 'debug');
+            logEntry(`Page title: ${await page.title().catch(()=>'N/A')}`, 'debug');
+            throw new Error(`Player element not visible after 60s: ${videoWaitError.message}`);
+        }
 
         const watchResult = await watchVideoOnPage(page, job, effectiveInput, logger);
         Object.assign(jobResult, watchResult);
 
-    } catch (e) { /* ... (error handling with screenshot) ... */ } 
-    finally { /* ... (cleanup as before) ... */ }
+    } catch (e) {
+        logEntry(`Critical error in job ${job.url}: ${e.message}\n${e.stack}`, 'error');
+        jobResult.status = 'failure';
+        jobResult.error = e.message + (e.stack ? `\nStack: ${e.stack}` : '');
+        if (page && typeof page.screenshot === 'function' && ApifyModule.Actor.isAtHome()) { 
+            try {
+                const screenshotBuffer = await page.screenshot({fullPage: true, timeout: 10000});
+                const key = `SCREENSHOT_ERROR_${job.id.replace(/-/g,'')}`;
+                if (ApifyModule.Actor.setValue) await ApifyModule.Actor.setValue(key, screenshotBuffer, { contentType: 'image/png' });
+                logEntry(`Screenshot taken on critical error: ${key}`);
+            } catch (screenshotError) {
+                logEntry(`Failed to take screenshot on critical error: ${screenshotError.message}`, 'warn');
+            }
+        }
+    } finally {
+        if (page && !page.isClosed()) await page.close().catch(e => jobScopedLogger.debug(`Error closing page: ${e.message}`));
+        if (context) await context.close().catch(e => jobScopedLogger.debug(`Error closing context: ${e.message}`));
+        if (browser) await browser.close().catch(e => jobScopedLogger.warning(`Error closing browser: ${e.message}`));
+        jobScopedLogger.info(`Finished job for ${job.url} with status: ${jobResult.status}`);
+    }
     return jobResult;
 }
+
 
 async function actorMainLogic() {
     console.log('ACTOR_MAIN_LOGIC: Entered main logic function.');
@@ -445,13 +533,16 @@ async function actorMainLogic() {
     GlobalLogger.debug('Raw input object:', input);
 
     const defaultInput = {
-        videosToWatch: [{ url: "https://www.youtube.com/watch?v=dQw4w9WgXcQ", watchType: "direct" }], // Updated default
+        videoUrls: ['https://www.youtube.com/watch?v=dQw4w9WgXcQ'], // Simple array for default
+        watchTypes: ['direct'], // Parallel array default
+        refererUrls: [''], // Parallel array default
+        searchKeywordsForEachVideo: ['default keyword, another default'], // Parallel array default
         watchTimePercentage: 80,
         useProxies: true,
         proxyUrls: [],
         proxyCountry: null,
         proxyGroups: ['RESIDENTIAL'],
-        headless: true, // Changed default to true for platform runs
+        headless: true, 
         concurrency: 1,
         concurrencyInterval: 5,
         timeout: 120,
@@ -459,8 +550,8 @@ async function actorMainLogic() {
         skipAdsAfter: ["5", "10"], 
         autoSkipAds: true,
         stopSpawningOnOverload: true,
-        useAV1: false, // Default to false as per latest input
-        disableProxyTests: false, // Not used with Apify proxy
+        useAV1: false,
+        disableProxyTests: false,
         enableEngagement: false,
         leaveComment: false,
         performLike: false,
@@ -472,17 +563,16 @@ async function actorMainLogic() {
 
     for (const key of Object.keys(defaultInput)) {
         if (rawInput.hasOwnProperty(key) && rawInput[key] !== undefined && rawInput[key] !== null) {
-            if (key === 'videosToWatch') { // Special handling for the main video array
+            if (Array.isArray(defaultInput[key])) { 
                 if (Array.isArray(rawInput[key]) && rawInput[key].length > 0) {
                     effectiveInput[key] = rawInput[key];
-                } // else, defaultInput.videosToWatch is kept
-            } else if ((key === 'proxyUrls' || key === 'proxyGroups' || key === 'skipAdsAfter') && Array.isArray(rawInput[key])) {
-                if (rawInput[key].length > 0) {
-                    effectiveInput[key] = rawInput[key];
-                } else if (key === 'proxyUrls') { 
+                } else if (Array.isArray(rawInput[key]) && rawInput[key].length === 0 && 
+                           (key === 'proxyUrls' || key === 'watchTypes' || key === 'refererUrls' || key === 'searchKeywordsForEachVideo')) {
                     effectiveInput[key] = [];
-                } // else, default is kept
-            } else if (key !== 'skipAdsAfter') { 
+                }
+                // If videoUrls or skipAdsAfter are empty from user, they'll keep the default from the initial spread.
+                // skipAdsAfter will be parsed further down.
+            } else { 
                 effectiveInput[key] = rawInput[key];
             }
         }
@@ -502,39 +592,62 @@ async function actorMainLogic() {
     
     GlobalLogger.info('Effective input settings:', effectiveInput);
 
-    if (!effectiveInput.videosToWatch || !Array.isArray(effectiveInput.videosToWatch) || effectiveInput.videosToWatch.length === 0) {
-        GlobalLogger.error('No videosToWatch provided or resolved after defaults. Exiting.');
-        if (ApifyModule.Actor.fail) await ApifyModule.Actor.fail('Missing videosToWatch in input.'); 
+    if (!effectiveInput.videoUrls || !Array.isArray(effectiveInput.videoUrls) || effectiveInput.videoUrls.length === 0) {
+        GlobalLogger.error('No videoUrls provided or resolved after defaults. Exiting.');
+        if (ApifyModule.Actor.fail) await ApifyModule.Actor.fail('Missing videoUrls in input.'); 
         return;
     }
 
     let actorProxyConfiguration = null;
-    if (effectiveInput.useProxies && (!effectiveInput.proxyUrls || effectiveInput.proxyUrls.length === 0)) { /* ... */ }
-    else if (effectiveInput.useProxies && effectiveInput.proxyUrls && effectiveInput.proxyUrls.length > 0) { /* ... */ }
+    if (effectiveInput.useProxies && (!effectiveInput.proxyUrls || effectiveInput.proxyUrls.length === 0)) {
+        const opts = { groups: effectiveInput.proxyGroups };
+        if (effectiveInput.proxyCountry && effectiveInput.proxyCountry.trim() !== "") opts.countryCode = effectiveInput.proxyCountry;
+        actorProxyConfiguration = await ApifyModule.Actor.createProxyConfiguration(opts);
+        GlobalLogger.info(`Apify Proxy Configuration created. Country: ${effectiveInput.proxyCountry || 'Any'}`);
+    } else if (effectiveInput.useProxies && effectiveInput.proxyUrls && effectiveInput.proxyUrls.length > 0) {
+        GlobalLogger.info(`Using ${effectiveInput.proxyUrls.length} custom proxies.`);
+    }
 
-    const jobs = effectiveInput.videosToWatch.map(videoTask => {
-        if (!videoTask || !videoTask.url) {
-            GlobalLogger.warning(`Invalid video task in input: ${JSON.stringify(videoTask)}. Skipping.`);
-            return null;
+    const jobs = [];
+    for (let i = 0; i < effectiveInput.videoUrls.length; i++) {
+        const url = effectiveInput.videoUrls[i];
+        if (!url || typeof url !== 'string') {
+            GlobalLogger.warning(`Invalid URL at index ${i}: ${url}. Skipping.`);
+            continue;
         }
-        const videoId = extractVideoId(videoTask.url);
-        if (!videoId) { GlobalLogger.warning(`Invalid URL (no ID): ${videoTask.url}. Skipping.`); return null; }
-        const platform = videoTask.url.includes('youtube.com')||videoTask.url.includes('youtu.be') ? 'youtube' : (videoTask.url.includes('rumble.com') ? 'rumble' : 'unknown');
-        if (platform === 'unknown') { GlobalLogger.warning(`Unknown platform: ${videoTask.url}. Skipping.`); return null; }
-        return { 
-            id: uuidv4(), 
-            url: videoTask.url, 
-            videoId, 
-            platform,
-            watchType: videoTask.watchType || 'direct', // Default to direct
-            refererUrl: videoTask.refererUrl,
-            searchKeywords: videoTask.searchKeywords 
-        };
-    }).filter(job => job !== null);
+        const videoId = extractVideoId(url);
+        if (!videoId) { GlobalLogger.warning(`Invalid URL (no ID for ${url}). Skipping.`); continue; }
+        const platform = url.includes('youtube.com')||url.includes('youtu.be') ? 'youtube' : (url.includes('rumble.com') ? 'rumble' : 'unknown');
+        if (platform === 'unknown') { GlobalLogger.warning(`Unknown platform for ${url}. Skipping.`); continue; }
 
-    if (jobs.length === 0) { /* ... */ }
+        const watchType = (effectiveInput.watchTypes && effectiveInput.watchTypes[i]) || defaultInput.watchTypes[0] || 'direct';
+        const refererUrl = (watchType === 'referer' && effectiveInput.refererUrls && effectiveInput.refererUrls[i]) || null;
+        
+        let searchKeywords = [];
+        if (watchType === 'search' && effectiveInput.searchKeywordsForEachVideo && typeof effectiveInput.searchKeywordsForEachVideo[i] === 'string') {
+            searchKeywords = effectiveInput.searchKeywordsForEachVideo[i].split(',').map(kw => kw.trim()).filter(kw => kw.length > 0);
+        }
+        
+        if (watchType === 'search' && searchKeywords.length === 0) {
+            GlobalLogger.warning(`Watch type is 'search' for ${url} but no valid search keywords found for index ${i}. Defaulting to 'direct'.`);
+            jobs.push({ id: uuidv4(), url, videoId, platform, watchType: 'direct', refererUrl: null, searchKeywords: [] });
+        } else {
+            jobs.push({ id: uuidv4(), url, videoId, platform, watchType, refererUrl, searchKeywords });
+        }
+    }
+
+
+    if (jobs.length === 0) {
+        GlobalLogger.error('No valid jobs after processing input. Exiting.');
+        if (ApifyModule.Actor.fail) await ApifyModule.Actor.fail('No valid video URLs to process.'); 
+        return;
+    }
     GlobalLogger.info(`Created ${jobs.length} valid jobs to process.`);
-    const overallResults = { /* ... */ };
+    
+    const overallResults = {
+        totalJobs: jobs.length, successfulJobs: 0, failedJobs: 0,
+        details: [], startTime: new Date().toISOString(), endTime: null,
+    };
 
     const activeWorkers = new Set();
     for (let i = 0; i < jobs.length; i++) {
@@ -547,7 +660,7 @@ async function actorMainLogic() {
             .catch(async (error) => { /* ... */ })
             .finally(() => { /* ... */ });
         activeWorkers.add(jobPromise);
-        GlobalLogger.info(`Job ${job.id.substring(0,6)} (${i + 1}/${jobs.length}) dispatched. Active: ${activeWorkers.size}`);
+        GlobalLogger.info(`Job ${job.id.substring(0,6)} (${i + 1}/${jobs.length}) dispatched. WatchType: ${job.watchType}. Active: ${activeWorkers.size}`);
         if (effectiveInput.concurrencyInterval > 0 && i < jobs.length - 1 && activeWorkers.size < effectiveInput.concurrency) { /* ... */ }
     }
     GlobalLogger.info(`All jobs dispatched. Waiting for ${activeWorkers.size} to complete...`);
@@ -560,5 +673,11 @@ async function actorMainLogic() {
 
 if (ApifyModule.Actor && typeof ApifyModule.Actor.main === 'function') {
     ApifyModule.Actor.main(actorMainLogic);
-} else { /* ... */ }
+} else {
+    console.error('CRITICAL: Apify.Actor.main is not defined. Running actorMainLogic directly.');
+    actorMainLogic().catch(err => {
+        console.error('CRITICAL: Error in direct actorMainLogic execution:', err);
+        process.exit(1);
+    });
+}
 console.log('MAIN.JS: Script fully loaded and main execution path determined.');

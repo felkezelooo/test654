@@ -91,8 +91,8 @@
             "title": "Skip Ads After",
             "type": "array",
             "description": "Skip ads after these many seconds",
-            "editor": "numberList",
-            "default": [5, 10]
+            "editor": "stringList",
+            "default": ["5", "10"]
         },
         "autoSkipAds": {
             "title": "Auto Skip Ads",

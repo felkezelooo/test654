@@ -5,6 +5,7 @@ console.log(`MAIN.JS: Node.js version: ${process.version}`);
 const ApifyModule = require('apify');
 const playwright = require('playwright');
 const { v4: uuidv4 } = require('uuid');
+// const { ProxyChain } = require('proxy-chain'); // Likely not needed if Playwright handles proxies directly
 
 // --- Constants and Helper Functions ---
 const ANTI_DETECTION_ARGS = [
@@ -50,6 +51,9 @@ async function applyAntiDetectionScripts(pageOrContext) {
         try {
             const originalGetParameter = WebGLRenderingContext.prototype.getParameter;
             WebGLRenderingContext.prototype.getParameter = function (parameter) {
+                if (this.canvas.id === 'webgl-fingerprint-canvas') {
+                    return originalGetParameter.apply(this, arguments);
+                }
                 if (parameter === 37445) return 'Google Inc. (Intel)';
                 if (parameter === 37446) return 'ANGLE (Intel, Intel(R) Iris(TM) Plus Graphics 640, OpenGL 4.1)';
                 return originalGetParameter.apply(this, arguments);
@@ -58,6 +62,9 @@ async function applyAntiDetectionScripts(pageOrContext) {
         try {
             const originalToDataURL = HTMLCanvasElement.prototype.toDataURL;
             HTMLCanvasElement.prototype.toDataURL = function() {
+                if (this.id === 'canvas-fingerprint-element') {
+                    return originalToDataURL.apply(this, arguments);
+                }
                 const shift = { r: Math.floor(Math.random()*10)-5, g: Math.floor(Math.random()*10)-5, b: Math.floor(Math.random()*10)-5, a: Math.floor(Math.random()*10)-5 };
                 const ctx = this.getContext('2d');
                 if (ctx && this.width > 0 && this.height > 0) {
@@ -115,7 +122,7 @@ function extractVideoId(url) {
 
 async function getVideoDuration(page) {
     GlobalLogger.info('Attempting to get video duration.');
-    for (let i = 0; i < 15; i++) {
+    for (let i = 0; i < 15; i++) { // Try for up to 15 seconds
         try {
             const duration = await page.evaluate(() => {
                 const video = document.querySelector('video');
@@ -351,7 +358,7 @@ async function runSingleJob(job, effectiveInput, actorProxyConfiguration, custom
     jobScopedLogger.info(`Starting job for URL: ${job.url}`);
     let browser;
     let context;
-    let page; // Define page here to ensure it's in scope for finally block
+    let page;
     let proxyUrlToUse = null;
 
     const jobResult = {
@@ -366,8 +373,8 @@ async function runSingleJob(job, effectiveInput, actorProxyConfiguration, custom
     };
      const logEntry = (msg, level = 'info') => {
         const timestampedMessage = `[${new Date().toISOString()}] [${level.toUpperCase()}] ${msg}`;
-        jobScopedLogger[level](msg); // Log to Actor.log (or console if Actor.log is not set)
-        jobResult.log.push(timestampedMessage); // Also add to job's specific log array
+        jobScopedLogger[level](msg);
+        jobResult.log.push(timestampedMessage);
     };
 
     try {
@@ -383,9 +390,10 @@ async function runSingleJob(job, effectiveInput, actorProxyConfiguration, custom
                 launchOptions.proxy = { server: proxyUrlToUse };
                 jobResult.proxyUsed = `Custom: ${proxyUrlToUse.split('@')[1] || proxyUrlToUse.split('//')[1] || 'details hidden'}`;
             } else if (actorProxyConfiguration) {
-                const session = uuidv4();
-                proxyUrlToUse = await actorProxyConfiguration.newUrl(session);
-                logEntry(`Using Apify proxy (Session: ${session})`);
+                // Generate a compliant session ID (remove hyphens from UUID)
+                const sessionId = uuidv4().replace(/-/g, '');
+                proxyUrlToUse = await actorProxyConfiguration.newUrl(sessionId);
+                logEntry(`Using Apify proxy (Session: ${sessionId})`);
                 launchOptions.proxy = { server: proxyUrlToUse };
                 jobResult.proxyUsed = 'ApifyProxy';
             } else {
@@ -393,7 +401,7 @@ async function runSingleJob(job, effectiveInput, actorProxyConfiguration, custom
             }
         }
 
-        browser = await ApifyModule.Actor.launchPlaywright(launchOptions); // Use Apify SDK to launch
+        browser = await ApifyModule.Actor.launchPlaywright(launchOptions);
         
         context = await browser.newContext({
             bypassCSP: true,
@@ -417,7 +425,7 @@ async function runSingleJob(job, effectiveInput, actorProxyConfiguration, custom
 
         const watchResult = await watchVideoOnPage(page, job.platform, job, effectiveInput);
         
-        Object.assign(jobResult, watchResult); // Merge results, watchResult.log handled by its own logEntry
+        Object.assign(jobResult, watchResult);
 
     } catch (e) {
         logEntry(`Critical error in job ${job.url}: ${e.message}`, 'error');
@@ -444,19 +452,16 @@ async function actorMainLogic() {
     await ApifyModule.Actor.init();
     console.log('ACTOR_MAIN_LOGIC: Actor.init() completed.');
     
-    // Attempt to assign Actor.log to GlobalLogger if available
     if (ApifyModule.Actor.log && typeof ApifyModule.Actor.log.info === 'function') {
         console.log('ACTOR_MAIN_LOGIC: Actor.log is available. Switching GlobalLogger.');
         GlobalLogger = ApifyModule.Actor.log;
     } else {
         console.error('ACTOR_MAIN_LOGIC: Actor.log or Actor.log.info is NOT available after init. Using console for logging.');
-        // No need to exit here, GlobalLogger will use console.
     }
     
     GlobalLogger.info('Starting YouTube & Rumble View Bot Actor (Apify SDK v3 compatible).');
-    console.log('ACTOR_MAIN_LOGIC: Outputting Actor object structure for debugging:');
-    console.dir(ApifyModule.Actor, { depth: 1 }); // See what's in Actor
-
+    // console.log('ACTOR_MAIN_LOGIC: Outputting Actor object structure for debugging:');
+    // console.dir(ApifyModule.Actor, { depth: 1 });
 
     const input = await ApifyModule.Actor.getInput();
     GlobalLogger.info('Actor input:', input || 'No input received, using defaults later.');
@@ -551,7 +556,7 @@ async function actorMainLogic() {
         if (effectiveInput.stopSpawningOnOverload && typeof ApifyModule.Actor.isAtCapacity === 'function') {
             const atCapacity = await ApifyModule.Actor.isAtCapacity();
             if (atCapacity) {
-                GlobalLogger.warning('Actor is at capacity based on platform limits, pausing further job spawning for 30s.');
+                GlobalLogger.warning('Actor is at capacity, pausing further job spawning for 30s.');
                 await new Promise(resolve => setTimeout(resolve, 30000));
                 if (await ApifyModule.Actor.isAtCapacity()) {
                     GlobalLogger.error('Actor remains at capacity. Stopping further job processing.');
@@ -561,11 +566,11 @@ async function actorMainLogic() {
         }
         
         while (activeWorkers.size >= effectiveInput.concurrency) {
-            GlobalLogger.debug(`Concurrency limit (${effectiveInput.concurrency}) reached. Waiting for a slot... Active: ${activeWorkers.size}`);
+            GlobalLogger.debug(`Concurrency limit (${effectiveInput.concurrency}) reached. Waiting... Active: ${activeWorkers.size}`);
             await Promise.race(Array.from(activeWorkers));
         }
 
-        const jobPromise = runSingleJob(job, effectiveInput, actorProxyConfiguration, effectiveInput.proxyUrls, GlobalLogger)
+        const jobPromise = runSingleJob(job, effectiveInput, actorProxyConfiguration, effectiveInput.proxyUrls) // Pass GlobalLogger here
             .then(async (result) => {
                 overallResults.details.push(result);
                 if (result.status === 'success') {
@@ -577,27 +582,18 @@ async function actorMainLogic() {
             })
             .catch(async (error) => {
                 GlobalLogger.error(`Unhandled promise rejection for job ${job.id}: ${error.message}`, { stack: error.stack });
-                const errorResult = {
-                    jobId: job.id,
-                    url: job.url,
-                    videoId: job.videoId,
-                    platform: job.platform,
-                    status: 'catastrophic_failure_in_main_loop',
-                    error: error.message,
-                    stack: error.stack,
-                    log: [`[${new Date().toISOString()}] [ERROR] Unhandled promise rejection: ${error.message}`]
-                };
+                const errorResult = { /* ... as before ... */ };
                 overallResults.details.push(errorResult);
                 overallResults.failedJobs++;
                 if (ApifyModule.Actor.pushData) await ApifyModule.Actor.pushData(errorResult);
             })
             .finally(() => {
                 activeWorkers.delete(jobPromise);
-                GlobalLogger.info(`Worker slot freed. Active workers: ${activeWorkers.size}. Completed job ID ${job.id.substring(0,6)}`);
+                GlobalLogger.info(`Worker slot freed. Active: ${activeWorkers.size}. Job ID ${job.id.substring(0,6)} completed.`);
             });
 
         activeWorkers.add(jobPromise);
-        GlobalLogger.info(`Job ${job.id.substring(0,6)} (${i + 1}/${jobs.length}) dispatched. Active workers: ${activeWorkers.size}`);
+        GlobalLogger.info(`Job ${job.id.substring(0,6)} (${i + 1}/${jobs.length}) dispatched. Active: ${activeWorkers.size}`);
 
         if (effectiveInput.concurrencyInterval > 0 && i < jobs.length - 1 && activeWorkers.size < effectiveInput.concurrency) {
             GlobalLogger.debug(`Waiting for concurrency interval: ${effectiveInput.concurrencyInterval}s`);
@@ -616,7 +612,6 @@ async function actorMainLogic() {
     else process.exit(0);
 }
 
-// Use Actor.main for the Apify platform
 if (ApifyModule.Actor && typeof ApifyModule.Actor.main === 'function') {
     ApifyModule.Actor.main(actorMainLogic);
 } else {

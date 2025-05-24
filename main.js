@@ -1,5 +1,6 @@
 const Apify = require('apify');
-const { log } = Apify.utils;
+// Remove the destructuring of log from Apify.utils
+// const { log } = Apify.utils;
 const { chromium } = require('playwright');
 const to = require('await-to-js').default;
 const { v4: uuidv4 } = require('uuid');

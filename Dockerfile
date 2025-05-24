@@ -1,18 +1,14 @@
 FROM apify/actor-node-playwright:18
 
-# Copy only package.json first to leverage Docker cache for this step
+# Copy only package.json and package-lock.json (if it exists and is specific to this actor)
 COPY package.json ./
-
-# Optional: If you have a package-lock.json specific to this actor AND you trust it, copy it too.
 # COPY package-lock.json ./
 
-# Ensure a clean state for npm install
-# - Remove package-lock.json if it was copied or exists from a previous layer to force fresh resolution from package.json.
-# - Clean npm cache.
-# - Remove node_modules to ensure no old/conflicting packages interfere.
-RUN rm -f package-lock.json \
+# Clean install of dependencies based on package.json
+# Removing existing node_modules and package-lock.json (if any from base image or cache)
+# ensures a fresh install.
+RUN rm -rf node_modules package-lock.json \
  && npm cache clean --force --quiet \
- && rm -rf node_modules \
  && npm --quiet set progress=false \
  && echo "Running npm install for production dependencies without optional ones..." \
  && npm install --only=prod --no-optional \

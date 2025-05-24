@@ -117,7 +117,7 @@ function extractVideoId(url) {
 
 async function getVideoDuration(page) {
     GlobalLogger.info('Attempting to get video duration.');
-    for (let i = 0; i < 15; i++) {
+    for (let i = 0; i < 15; i++) { // Try for up to 15 seconds
         try {
             const duration = await page.evaluate(() => {
                 const video = document.querySelector('video');
@@ -157,7 +157,7 @@ async function handleAds(page, platform, effectiveInput) {
     for (adWatchLoop = 0; adWatchLoop < maxAdLoopIterations; adWatchLoop++) {
         let isAdPlaying = false;
         let canSkip = false;
-        let adCurrentTime = adWatchLoop * (adCheckInterval / 1000);
+        let adCurrentTime = adWatchLoop * (adCheckInterval / 1000); // Approximate
 
         if (platform === 'youtube') {
             isAdPlaying = await page.locator('.ytp-ad-player-overlay-instream-info, .video-ads .ad-showing').count() > 0;
@@ -255,7 +255,7 @@ async function watchVideoOnPage(page, platform, job, effectiveInput) {
         const maxWatchLoops = Math.ceil(targetWatchTimeSec / (watchIntervalMs / 1000)) + 12;
 
         for (let i = 0; i < maxWatchLoops; i++) {
-            logEntry(`Loop ${i+1}/${maxWatchLoops}. Ads check.`);
+            logEntry(`Watch loop ${i+1}/${maxWatchLoops}. Ads check.`);
             await handleAds(page, platform, effectiveInput);
             const videoState = await page.evaluate(() => { const v = document.querySelector('video'); return v ? { ct:v.currentTime, p:v.paused, e:v.ended, rs:v.readyState, ns:v.networkState } : null; }).catch(e => { logEntry(`Video state error: ${e.message}`, 'warn'); return null; });
             if (!videoState) throw new Error('Video element disappeared.');
@@ -310,11 +310,11 @@ async function runSingleJob(job, effectiveInput, actorProxyConfiguration, custom
         if (effectiveInput.useProxies) {
             if (customProxyPool && customProxyPool.length > 0) {
                 proxyUrlToUse = customProxyPool[Math.floor(Math.random() * customProxyPool.length)];
-                logEntry(`Using custom proxy: ${proxyUrlToUse.split('@')[0]}`);
+                logEntry(`Using custom proxy: ${proxyUrlToUse.split('@')[0]}`); // Mask credentials
                 launchOptions.proxy = { server: proxyUrlToUse };
                 jobResult.proxyUsed = `Custom: ${proxyUrlToUse.split('@')[1] || proxyUrlToUse.split('//')[1] || 'details hidden'}`;
             } else if (actorProxyConfiguration) {
-                const sessionId = uuidv4().replace(/-/g, ''); // Ensure compliant session ID
+                const sessionId = uuidv4().replace(/-/g, '');
                 proxyUrlToUse = await actorProxyConfiguration.newUrl(sessionId);
                 logEntry(`Using Apify proxy (Session: ${sessionId})`);
                 launchOptions.proxy = { server: proxyUrlToUse };
@@ -324,7 +324,7 @@ async function runSingleJob(job, effectiveInput, actorProxyConfiguration, custom
             }
         }
 
-        browser = await playwright.chromium.launch(launchOptions); // Use playwright directly
+        browser = await playwright.chromium.launch(launchOptions); // Using playwright module directly
         
         context = await browser.newContext({
             bypassCSP: true, ignoreHTTPSErrors: true,
@@ -334,12 +334,26 @@ async function runSingleJob(job, effectiveInput, actorProxyConfiguration, custom
         await applyAntiDetectionScripts(context);
         page = await context.newPage();
         await page.setViewportSize({ width: 1200 + Math.floor(Math.random()*120), height: 700 + Math.floor(Math.random()*80) });
-        await page.goto(job.url, { timeout: effectiveInput.timeout * 1000, waitUntil: 'domcontentloaded' });
-        logEntry(`Navigated to ${job.url}`);
+
+        // Changed waitUntil to 'load' for potentially better stability on media pages
+        await page.goto(job.url, { timeout: effectiveInput.timeout * 1000, waitUntil: 'load' });
+        logEntry(`Navigated to ${job.url} (waitUntil: 'load')`);
+
+        // Add a specific wait for the video element to be present and potentially intractable
+        try {
+            await page.waitForSelector('video', { state: 'attached', timeout: 30000 }); // Wait up to 30s for video tag
+            logEntry('Video element is attached to the DOM.');
+        } catch (videoWaitError) {
+            logEntry(`Video element did not attach within 30s: ${videoWaitError.message}`, 'warn');
+            // Decide if this is a critical failure or if we should proceed
+            // For now, let watchVideoOnPage handle it, it will fail if it can't find the video
+        }
+
+
         const watchResult = await watchVideoOnPage(page, job.platform, job, effectiveInput);
         Object.assign(jobResult, watchResult);
     } catch (e) {
-        logEntry(`Critical error in job ${job.url}: ${e.message}\n${e.stack}`, 'error'); // Include stack in job log
+        logEntry(`Critical error in job ${job.url}: ${e.message}\n${e.stack}`, 'error');
         jobResult.status = 'failure';
         jobResult.error = e.message + (e.stack ? `\nStack: ${e.stack}` : '');
     } finally {
@@ -359,7 +373,7 @@ async function actorMainLogic() {
         console.log('ACTOR_MAIN_LOGIC: Actor.log is available. Switching GlobalLogger.');
         GlobalLogger = ApifyModule.Actor.log;
     } else {
-        console.error('ACTOR_MAIN_LOGIC: Actor.log or Actor.log.info is NOT available after init. Using console for logging.');
+        console.error('ACTOR_MAIN_LOGIC: Actor.log or Actor.log.info is NOT available. Using console for logging.');
     }
     GlobalLogger.info('Starting YouTube & Rumble View Bot Actor (Apify SDK v3 compatible).');
 

@@ -9,7 +9,7 @@
             "type": "array",
             "description": "List of videos to process. Each video can have its own settings.",
             "editor": "objectList",
-            "objectSchema": {
+            "items": {   Linz: "objectSchema" was changed to "items"
                 "title": "Video Task",
                 "type": "object",
                 "properties": {

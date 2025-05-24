@@ -3,11 +3,9 @@ console.log('MAIN.JS: Script execution started.');
 console.log(`MAIN.JS: Node.js version: ${process.version}`);
 
 const ApifyModule = require('apify');
-const playwright = require('playwright'); // Directly use playwright
+const playwright = require('playwright');
 const { v4: uuidv4 } = require('uuid');
-// const { ProxyChain } = require('proxy-chain');
 
-// --- Constants and Helper Functions ---
 const ANTI_DETECTION_ARGS = [
     '--disable-blink-features=AutomationControlled',
     '--disable-features=IsolateOrigins,site-per-process,ImprovedCookieControls,LazyFrameLoading,GlobalMediaControls,DestroyProfileOnBrowserClose,MediaRouter,DialMediaRouteProvider,AcceptCHFrame,AutoExpandDetailsElement,CertificateTransparencyEnforcement,AvoidUnnecessaryBeforeUnloadCheckSync,Translate',
@@ -117,7 +115,7 @@ function extractVideoId(url) {
 
 async function getVideoDuration(page) {
     GlobalLogger.info('Attempting to get video duration.');
-    for (let i = 0; i < 15; i++) { // Try for up to 15 seconds
+    for (let i = 0; i < 15; i++) {
         try {
             const duration = await page.evaluate(() => {
                 const video = document.querySelector('video');
@@ -138,10 +136,9 @@ async function getVideoDuration(page) {
 
 async function clickIfExists(page, selector, timeout = 3000) {
     try {
-        // Wait for element to be visible and stable, then click
-        const element = page.locator(selector).first(); // Take the first if multiple
+        const element = page.locator(selector).first();
         await element.waitFor({ state: 'visible', timeout });
-        await element.click({ timeout: timeout / 2, force: false, noWaitAfter: false }); // Ensure click completes
+        await element.click({ timeout: timeout / 2, force: false, noWaitAfter: false });
         GlobalLogger.info(`Clicked on selector: ${selector}`);
         return true;
     } catch (e) {
@@ -159,7 +156,7 @@ async function handleAds(page, platform, effectiveInput) {
     for (adWatchLoop = 0; adWatchLoop < maxAdLoopIterations; adWatchLoop++) {
         let isAdPlaying = false;
         let canSkip = false;
-        let adCurrentTime = adWatchLoop * (adCheckInterval / 1000); // Approximate
+        let adCurrentTime = adWatchLoop * (adCheckInterval / 1000); 
 
         if (platform === 'youtube') {
             isAdPlaying = await page.locator('.ytp-ad-player-overlay-instream-info, .video-ads .ad-showing').count() > 0;
@@ -185,8 +182,8 @@ async function handleAds(page, platform, effectiveInput) {
         if (effectiveInput.autoSkipAds && canSkip) {
             GlobalLogger.info('Attempting to skip ad (autoSkipAds).');
             await clickIfExists(page, '.ytp-ad-skip-button-modern, .ytp-ad-skip-button, button[aria-label*="Skip Ad"], div[class*="skip-button"]', 1000);
-            await page.waitForTimeout(2000); // Wait for ad to potentially disappear
-            continue; // Re-check immediately if ad is gone
+            await page.waitForTimeout(2000); 
+            continue; 
         }
 
         if (adCurrentTime >= minSkipTime && canSkip) {
@@ -203,7 +200,7 @@ async function handleAds(page, platform, effectiveInput) {
              } else {
                 GlobalLogger.info('Max ad watch time reached, but cannot skip yet.');
              }
-             break; // Exit ad loop if max ad time is reached
+             break; 
         }
         await page.waitForTimeout(adCheckInterval);
     }
@@ -254,7 +251,7 @@ async function watchVideoOnPage(page, platform, job, effectiveInput) {
 
         let currentActualWatchTime = 0;
         const watchIntervalMs = 5000;
-        const maxWatchLoops = Math.ceil(targetWatchTimeSec / (watchIntervalMs / 1000)) + 12; // Extra loops for ads/buffering
+        const maxWatchLoops = Math.ceil(targetWatchTimeSec / (watchIntervalMs / 1000)) + 12;
 
         for (let i = 0; i < maxWatchLoops; i++) {
             logEntry(`Watch loop ${i+1}/${maxWatchLoops}. Ads check.`);
@@ -303,8 +300,8 @@ async function runSingleJob(job, effectiveInput, actorProxyConfiguration, custom
     };
     const logEntry = (msg, level = 'info') => {
         const tsMsg = `[${new Date().toISOString()}] [${level.toUpperCase()}] ${msg}`;
-        jobScopedLogger[level](msg); // Log to Actor.log (or console if Actor.log is not set)
-        jobResult.log.push(tsMsg); // Also add to job's specific log array
+        jobScopedLogger[level](msg);
+        jobResult.log.push(tsMsg);
     };
 
     try {
@@ -312,21 +309,33 @@ async function runSingleJob(job, effectiveInput, actorProxyConfiguration, custom
         if (effectiveInput.useProxies) {
             if (customProxyPool && customProxyPool.length > 0) {
                 proxyUrlToUse = customProxyPool[Math.floor(Math.random() * customProxyPool.length)];
-                logEntry(`Using custom proxy: ${proxyUrlToUse.split('@')[0]}`); // Mask credentials
+                logEntry(`Using custom proxy: ${proxyUrlToUse.split('@')[0]}`);
                 launchOptions.proxy = { server: proxyUrlToUse };
                 jobResult.proxyUsed = `Custom: ${proxyUrlToUse.split('@')[1] || proxyUrlToUse.split('//')[1] || 'details hidden'}`;
             } else if (actorProxyConfiguration) {
                 const sessionId = uuidv4().replace(/-/g, '');
-                proxyUrlToUse = await actorProxyConfiguration.newUrl(sessionId);
-                logEntry(`Using Apify proxy (Session: ${sessionId})`);
-                launchOptions.proxy = { server: proxyUrlToUse };
-                jobResult.proxyUsed = 'ApifyProxy';
+                try {
+                    proxyUrlToUse = await actorProxyConfiguration.newUrl(sessionId);
+                    logEntry(`Using Apify proxy (Session: ${sessionId})`);
+                    launchOptions.proxy = { server: proxyUrlToUse };
+                    jobResult.proxyUsed = 'ApifyProxy';
+                } catch (proxyError) {
+                    logEntry(`Failed to get Apify proxy URL: ${proxyError.message}`, 'error');
+                    throw new Error(`Apify Proxy acquisition failed: ${proxyError.message}`);
+                }
             } else {
                 logEntry('No proxies configured. Running directly.', 'warn');
             }
         }
-
-        browser = await playwright.chromium.launch(launchOptions); // Use playwright module directly
+        
+        // Prefer Apify's launchPlaywright if it exists and is functional
+        if (ApifyModule.Actor.launchPlaywright && typeof ApifyModule.Actor.launchPlaywright === 'function') {
+            logEntry('Attempting to launch browser with Apify.Actor.launchPlaywright');
+            browser = await ApifyModule.Actor.launchPlaywright(launchOptions);
+        } else {
+            logEntry('Apify.Actor.launchPlaywright not available or not a function. Using playwright.chromium.launch directly.');
+            browser = await playwright.chromium.launch(launchOptions);
+        }
         
         context = await browser.newContext({
             bypassCSP: true, ignoreHTTPSErrors: true,
@@ -343,33 +352,54 @@ async function runSingleJob(job, effectiveInput, actorProxyConfiguration, custom
 
         // Attempt to handle cookie consent popups
         const consentSelectors = [
-            'button[aria-label*="Accept all"]', 'button[aria-label*="Agree"]', 'button:has-text("Accept All")', 'button:has-text("I Agree")',
-            'div[aria-modal="true"] button:has-text("Accept all")', 'div[aria-modal="true"] button:has-text("I agree")'
-            // Add more selectors if specific ones are identified for YouTube/Rumble
+            // YouTube specific (common variations)
+            'button[aria-label*="Accept all"]', 'button[aria-label*="Reject all"]', // General
+            'form[action*="consent.youtube.com"] button[aria-label*="Accept"]',
+            'form[action*="consent.youtube.com"] button[aria-label*="Reject"]',
+            'div[aria-modal="true"] button:has-text("Accept all")', 'div[aria-modal="true"] button:has-text("Reject all")',
+            'div[aria-modal="true"] button:has-text("I agree")',
+            // Rumble specific (if known, otherwise generic)
+            'button:has-text("ACCEPT")', 'button:has-text("AGREE")'
         ];
-        let consentClicked = false;
+        let consentHandled = false;
         for (const selector of consentSelectors) {
-            if (await clickIfExists(page, selector, 5000)) {
-                logEntry(`Clicked a consent button: ${selector}`);
-                await page.waitForTimeout(2000 + Math.random() * 1000); // Allow page to react
-                consentClicked = true;
-                break;
+            // Try to click "Accept" or "Agree" first
+            if (selector.toLowerCase().includes('accept') || selector.toLowerCase().includes('agree')) {
+                if (await clickIfExists(page, selector, 5000)) {
+                    logEntry(`Clicked a consent/accept button: ${selector}`);
+                    await page.waitForTimeout(2000 + Math.random() * 1000); // Allow page to react
+                    consentHandled = true;
+                    break;
+                }
             }
         }
-        if (!consentClicked) {
-            logEntry('No common consent popups found/clicked.', 'debug');
+        // If no accept was found, try a reject button to clear the modal (less ideal but might work)
+        if (!consentHandled) {
+            for (const selector of consentSelectors) {
+                 if (selector.toLowerCase().includes('reject')) {
+                     if (await clickIfExists(page, selector, 3000)) {
+                        logEntry(`Clicked a consent/reject button as fallback: ${selector}`);
+                        await page.waitForTimeout(1500 + Math.random() * 500);
+                        consentHandled = true; // Or set a flag indicating a less ideal path was taken
+                        break;
+                     }
+                 }
+            }
+        }
+        if (!consentHandled) {
+            logEntry('No common consent popups found/clicked, or interaction failed.', 'debug');
         }
         
         const playerSelector = platform === 'youtube' ? '#movie_player, video.html5-main-video' : '.rumble-player-video-wrapper, video.rumble-player';
         try {
             logEntry(`Waiting for player element (${playerSelector}) to be visible.`);
-            await page.waitForSelector(playerSelector, { state: 'visible', timeout: 45000 }); // Increased timeout
+            await page.waitForSelector(playerSelector, { state: 'visible', timeout: 60000 }); // Increased timeout to 60s
             logEntry(`Player element (${playerSelector}) is visible.`);
         } catch (videoWaitError) {
-            logEntry(`Player element (${playerSelector}) did not become visible within 45s: ${videoWaitError.message}`, 'error');
-            const pageContent = await page.content().catch(() => 'Could not get page content.');
-            logEntry(`Page content sample: ${pageContent.substring(0, 500)}`, 'debug');
-            throw new Error(`Player element not visible: ${videoWaitError.message}`); // Re-throw to fail the job
+            logEntry(`Player element (${playerSelector}) did not become visible within 60s: ${videoWaitError.message}`, 'error');
+            const pageContent = await page.content({timeout: 5000}).catch(() => 'Could not get page content.');
+            logEntry(`Page content sample (first 500 chars): ${pageContent.substring(0, 500)}`, 'debug');
+            throw new Error(`Player element not visible after 60s: ${videoWaitError.message}`);
         }
 
         const watchResult = await watchVideoOnPage(page, job.platform, job, effectiveInput);
@@ -398,8 +428,7 @@ async function actorMainLogic() {
     } else if (ApifyModule.utils && ApifyModule.utils.log && typeof ApifyModule.utils.log.info === 'function') {
         console.log('ACTOR_MAIN_LOGIC: Actor.log not available, but Apify.utils.log is. Switching GlobalLogger.');
         GlobalLogger = ApifyModule.utils.log;
-    }
-     else {
+    } else {
         console.error('ACTOR_MAIN_LOGIC: Neither Actor.log nor Apify.utils.log is available. Using console for logging.');
     }
     GlobalLogger.info('Starting YouTube & Rumble View Bot Actor (Apify SDK v3 compatible).');

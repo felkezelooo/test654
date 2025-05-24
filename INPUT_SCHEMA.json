@@ -9,43 +9,46 @@
             "type": "array",
             "description": "List of videos to process. Each video can have its own settings.",
             "editor": "objectList", 
+            "items": { 
+                "type": "object",
+                "title": "Video Task", 
+                "properties": {
+                    "url": {
+                        "title": "Video URL",
+                        "type": "string",
+                        "description": "YouTube or Rumble video URL",
+                        "editor": "textfield"
+                    },
+                    "watchType": {
+                        "title": "Watch Type",
+                        "type": "string",
+                        "description": "How to reach the video.",
+                        "default": "direct",
+                        "enum": ["direct", "referer", "search"],
+                        "enumTitles": ["Direct Visit", "Via Referer", "Via Search"]
+                    },
+                    "refererUrl": {
+                        "title": "Referer URL (if Watch Type is 'referer')",
+                        "type": "string",
+                        "description": "The URL to set as the referer. Only used if Watch Type is 'referer'.",
+                        "editor": "textfield",
+                        "prefill": "https://www.google.com/"
+                    },
+                    "searchKeywords": {
+                        "title": "Search Keywords (if Watch Type is 'search')",
+                        "type": "array",
+                        "description": "Keywords to search for. One will be chosen randomly. Video must be findable with these. Only used if Watch Type is 'search'.",
+                        "editor": "stringList",
+                        "prefill": ["funny cat videos"]
+                    }
+                },
+                "required": ["url"]
+            },
             "prefill": [
                 { "url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ", "watchType": "direct" },
                 { "url": "https://www.youtube.com/watch?v=anotherVideo", "watchType": "referer", "refererUrl": "https://www.twitter.com/"},
                 { "url": "https://rumble.com/v2j3hyu-example-video.html", "watchType": "search", "searchKeywords": ["example video rumble"]}
-            ],
-            "sectionCaption": "Video Task", 
-            "properties": { 
-                "url": {
-                    "title": "Video URL",
-                    "type": "string",
-                    "description": "YouTube or Rumble video URL",
-                    "editor": "textfield"
-                },
-                "watchType": {
-                    "title": "Watch Type",
-                    "type": "string",
-                    "description": "How to reach the video.",
-                    "default": "direct",
-                    "enum": ["direct", "referer", "search"],
-                    "enumTitles": ["Direct Visit", "Via Referer", "Via Search"]
-                },
-                "refererUrl": {
-                    "title": "Referer URL (if Watch Type is 'referer')",
-                    "type": "string",
-                    "description": "The URL to set as the referer. Only used if Watch Type is 'referer'.",
-                    "editor": "textfield",
-                    "prefill": "https://www.google.com/"
-                },
-                "searchKeywords": {
-                    "title": "Search Keywords (if Watch Type is 'search')",
-                    "type": "array",
-                    "description": "Keywords to search for. One will be chosen randomly. Video must be findable with these. Only used if Watch Type is 'search'.",
-                    "editor": "stringList",
-                    "prefill": ["funny cat videos"]
-                }
-            },
-            "required": ["url"] 
+            ]
         },
         "watchTimePercentage": {
             "title": "Watch Time Percentage",

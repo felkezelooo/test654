@@ -140,7 +140,7 @@ async function clickIfExists(page, selector, timeout = 3000, loggerToUse = Globa
             return true;
         } catch (clickError) {
             (loggerToUse || console).debug(`Normal click failed for ${selector}, trying with force. Error: ${clickError.message.split('\n')[0]}`);
-            await element.click({ timeout: timeout / 2, force: true, noWaitAfter: false, trial: true }); // Using force as a fallback
+            await element.click({ timeout: timeout / 2, force: true, noWaitAfter: false, trial: true }); 
             (loggerToUse || console).info(`Clicked on selector with force: ${selector}${inFrame ? ' (in iframe)' : ''}`);
             return true;
         }
@@ -244,31 +244,31 @@ async function watchVideoOnPage(page, job, effectiveInput, loggerToUse = GlobalL
         watchTimeRequestedSec: 0, watchTimeActualSec: 0, durationFoundSec: null,
         startTime: new Date().toISOString(), endTime: null, error: null, log: []
     };
-    // Ensure loggerToUse has the .info, .warning etc. methods directly
+    
     const logEntry = (msg, level = 'info') => {
         const formattedMessage = `[Job ${job.id.substring(0,6)}] ${msg}`;
         if (loggerToUse && typeof loggerToUse[level] === 'function') {
             loggerToUse[level](formattedMessage);
         } else {
-            (GlobalLogger || console)[level](formattedMessage); // Fallback to GlobalLogger or console
+            (GlobalLogger || console)[level](formattedMessage); 
         }
         jobResult.log.push(`[${new Date().toISOString()}] [${level.toUpperCase()}] ${msg}`);
     };
 
     try {
         logEntry('Handling initial ads.');
-        await handleAds(page, job.platform, effectiveInput, loggerToUse);
+        await handleAds(page, job.platform, effectiveInput, loggerToUse); // Pass the full loggerToUse
         logEntry(`Attempting to play video: ${job.url}`);
         
         const playButtonSelectors = job.platform === 'youtube' 
             ? ['.ytp-large-play-button', '.ytp-play-button[aria-label*="Play"]', 'video.html5-main-video']
             : ['.rumbles-player-play-button', 'video.rumble-player-video'];
         
-        await ensureVideoPlaying(page, playButtonSelectors, logEntry);
+        await ensureVideoPlaying(page, playButtonSelectors, logEntry); // logEntry is fine here as it uses loggerToUse
         
         await page.evaluate(() => { const v = document.querySelector('video'); if(v) { v.muted=false; v.volume=0.05+Math.random()*0.1; }}).catch(e => logEntry(`Unmute/volume failed: ${e.message}`, 'debug'));
 
-        const duration = await getVideoDuration(page, loggerToUse);
+        const duration = await getVideoDuration(page, loggerToUse); // Pass the full loggerToUse
         if (!duration || duration <= 0) throw new Error('Could not determine valid video duration after multiple attempts.');
         jobResult.durationFoundSec = duration;
 
@@ -279,27 +279,26 @@ async function watchVideoOnPage(page, job, effectiveInput, loggerToUse = GlobalL
 
         let currentActualWatchTime = 0;
         const watchIntervalMs = 5000;
-        const maxWatchLoops = Math.ceil(targetWatchTimeSec / (watchIntervalMs / 1000)) + 12; // +12 loops (1 min) for buffer
+        const maxWatchLoops = Math.ceil(targetWatchTimeSec / (watchIntervalMs / 1000)) + 12; 
 
         for (let i = 0; i < maxWatchLoops; i++) {
             logEntry(`Watch loop ${i+1}/${maxWatchLoops}. Ads check.`);
-            await handleAds(page, job.platform, effectiveInput, loggerToUse); 
+            await handleAds(page, job.platform, effectiveInput, loggerToUse); // Pass the full loggerToUse
             const videoState = await page.evaluate(() => { const v = document.querySelector('video'); return v ? { ct:v.currentTime, p:v.paused, e:v.ended, rs:v.readyState, ns:v.networkState } : null; }).catch(e => { logEntry(`Video state error: ${e.message}`, 'warn'); return null; });
             
             if (!videoState) {
-                 // Try to recover if video element temporarily not found (e.g. during ad transition)
                 logEntry('Video element not found in evaluate, attempting to find again.', 'warn');
                 await page.waitForTimeout(1000);
                 const videoExists = await page.locator('video').count() > 0;
                 if (!videoExists) throw new Error('Video element disappeared definitively.');
-                continue; // Retry loop
+                continue; 
             }
 
             logEntry(`State: time=${videoState.ct?.toFixed(2)}, paused=${videoState.p}, ended=${videoState.e}, ready=${videoState.rs}, net=${videoState.ns}`);
             
             if (videoState.p && !videoState.e) {
                 logEntry('Video is paused, attempting to ensure it plays.');
-                await ensureVideoPlaying(page, playButtonSelectors, logEntry);
+                await ensureVideoPlaying(page, playButtonSelectors, logEntry); // logEntry is fine here
             }
             
             currentActualWatchTime = videoState.ct || 0;
@@ -310,7 +309,7 @@ async function watchVideoOnPage(page, job, effectiveInput, loggerToUse = GlobalL
                 break; 
             }
             
-            if (i % 6 === 0) { // Simulate mouse move every ~30s
+            if (i % 6 === 0) { 
                  await page.mouse.move(Math.random()*500,Math.random()*300,{steps:5}).catch(()=>{}); 
                  logEntry('Simulated mouse move.','debug');
             }
@@ -331,25 +330,26 @@ async function watchVideoOnPage(page, job, effectiveInput, loggerToUse = GlobalL
 async function handleInitialConsent(page, platform, loggerToUse = GlobalLogger) {
     if (platform === 'youtube') {
         loggerToUse.info('Checking for YouTube consent dialog on current page...');
-        // More specific selector for the main dialog container, especially for the UK version
         const mainDialogSelector = 'ytd-consent-bump-v2-lightbox[id="lightbox"], tp-yt-paper-dialog.ytd-consent-bump-v2-lightbox';
         const consentIframeSelectors = ['iframe[src*="consent.google.com"]', 'iframe[src*="consent.youtube.com"]'];
         
         let consentFrame;
-        let mainDialogLocator; // Use locator for the main dialog
+        let mainDialogLocator; 
         let dialogIsVisible = false;
+        let activeIframeLocator = null; // To store the locator of the found iframe
 
         // Check for iframe first
         for (const frameSelector of consentIframeSelectors) {
             try {
                 const frameLocator = page.locator(frameSelector).first();
-                await frameLocator.waitFor({ state: 'visible', timeout: 7000 }); // Increased timeout
+                await frameLocator.waitFor({ state: 'visible', timeout: 7000 });
                 const elementHandle = await frameLocator.elementHandle();
                 if (elementHandle) {
                     consentFrame = await elementHandle.contentFrame();
                     if (consentFrame) { 
                         loggerToUse.info(`Consent iframe found with selector: ${frameSelector}`);
                         dialogIsVisible = true; 
+                        activeIframeLocator = frameLocator; // Store the locator of the found iframe
                         break; 
                     }
                 }
@@ -358,11 +358,10 @@ async function handleInitialConsent(page, platform, loggerToUse = GlobalLogger) 
             }
         }
 
-        // If no iframe, check for main page dialog
         if (!dialogIsVisible) {
              try {
                 mainDialogLocator = page.locator(mainDialogSelector).first();
-                await mainDialogLocator.waitFor({ state: 'visible', timeout: 10000 }); // Increased timeout
+                await mainDialogLocator.waitFor({ state: 'visible', timeout: 10000 });
                 loggerToUse.info('Main page consent dialog detected.');
                 dialogIsVisible = true;
             } catch (e) {
@@ -382,47 +381,31 @@ async function handleInitialConsent(page, platform, loggerToUse = GlobalLogger) 
         loggerToUse.info(`Attempting to click "Accept all" or similar${targetLogSuffix}.`);
         
         const acceptSelectors = [
-            // UK specific selectors based on your HTML and screenshot
             'tp-yt-paper-dialog.ytd-consent-bump-v2-lightbox div.eom-buttons ytd-button-renderer button[aria-label*="Accept the use of cookies"]',
-            'tp-yt-paper-dialog.ytd-consent-bump-v2-lightbox div.eom-buttons ytd-button-renderer button:has-text("Accept all")',
-            // General selectors that were present
+            'tp-yt-paper-dialog.ytd-consent-bump-v2-lightbox div.eom-buttons ytd-button-renderer button:has-text("Accept all")', 
             'ytd-consent-bump-v2-lightbox button[aria-label*="Accept the use of cookies"]',
             'ytd-consent-bump-v2-lightbox button:has-text("Accept all")',
             'ytd-consent-bump-v2-lightbox ytd-button-renderer button:has-text("Accept all")',
-            'button[aria-label*="Accept all"]', 
-            'button:has-text("Accept all")',
-            'button:has-text("Agree to all")', 
-            'button[jsname*="LgbsSe"]', 
+            'button[aria-label*="Accept all"]', 'button:has-text("Accept all")',
+            'button:has-text("Agree to all")', 'button[jsname*="LgbsSe"]', 
             'div[role="button"]:has-text("Accept all")'
         ];
 
         let clickedConsent = false;
         for (const selector of acceptSelectors) {
-            if (await clickIfExists(targetForClicks, selector, 7000, loggerToUse, consentFrame)) {
+            if (await clickIfExists(targetForClicks, selector, 7000, loggerToUse, consentFrame)) { // Pass consentFrame if it exists
                 loggerToUse.info(`Clicked consent button "${selector}"${targetLogSuffix}. Waiting for dialog to disappear.`);
                 clickedConsent = true;
                 try {
-                    if (consentFrame) { 
-                        // If it was in an iframe, wait for the *iframe itself* to become hidden,
-                        // as the dialog inside might disappear but the iframe might linger.
-                        // Find the locator of the iframe that was used.
-                        let activeIframeLocator;
-                        for (const fs of consentIframeSelectors) {
-                            if (page.locator(fs).first() === (await consentFrame.ownerFrame().ownerFrameElement())?.locator().first() ) { // Heuristic
-                                activeIframeLocator = page.locator(fs).first();
-                                break;
-                            }
-                        }
-                        if (activeIframeLocator) {
-                             await activeIframeLocator.waitFor({ state: 'hidden', timeout: 10000 });
-                             loggerToUse.info('Consent iframe is now hidden.');
-                        } else {
-                            loggerToUse.warning('Could not re-identify iframe for hidden check, relying on general timeout.');
-                            await page.waitForTimeout(5000);
-                        }
+                    if (activeIframeLocator) { 
+                         await activeIframeLocator.waitFor({ state: 'hidden', timeout: 10000 });
+                         loggerToUse.info('Consent iframe is now hidden.');
                     } else if (mainDialogLocator) { 
                         await mainDialogLocator.waitFor({ state: 'hidden', timeout: 10000 });
                         loggerToUse.info('Main page consent dialog element is now hidden.');
+                    } else {
+                         loggerToUse.warning('No specific dialog/iframe locator to check for hidden state. Relying on general timeout.');
+                         await page.waitForTimeout(5000);
                     }
                     loggerToUse.info('Consent dialog seems to be dismissed.');
                 } catch (e) {
@@ -438,36 +421,36 @@ async function handleInitialConsent(page, platform, loggerToUse = GlobalLogger) 
 
 
 async function runSingleJob(job, effectiveInput, actorProxyConfiguration, customProxyPool, logger) {
-    const jobScopedLogger = { // This is the logger object with .info, .warning, etc.
+    const jobScopedLogger = {
         info: (msg) => logger.info(`[Job ${job.id.substring(0,6)}] ${msg}`),
         warning: (msg) => logger.warning(`[Job ${job.id.substring(0,6)}] ${msg}`),
         error: (msg, data) => logger.error(`[Job ${job.id.substring(0,6)}] ${msg}`, data),
         debug: (msg) => logger.debug(`[Job ${job.id.substring(0,6)}] ${msg}`),
     };
     
-    // This logEntry function is for adding to jobResult.log AND calling the jobScopedLogger
+    // Moved jobResult declaration before logEntry
+    const jobResult = {
+        jobId: job.id, url: job.url, videoId: job.videoId, platform: job.platform,
+        proxyUsed: 'None', status: 'initiated', error: null, log: []
+    };
+
     const logEntry = (msg, level = 'info') => {
         const tsMsg = `[${new Date().toISOString()}] [${level.toUpperCase()}] ${msg}`;
-        // Call the appropriate method on jobScopedLogger for console/Apify log
         if (jobScopedLogger && typeof jobScopedLogger[level] === 'function') {
             jobScopedLogger[level](msg);
-        } else { // Fallback
+        } else { 
             (GlobalLogger || console)[level](`[Job ${job.id.substring(0,6)}] ${msg}`);
         }
-        jobResult.log.push(tsMsg); // Always push to jobResult.log
+        jobResult.log.push(tsMsg); 
     };
     
-    logEntry(`Starting job for URL: ${job.url} with watchType: ${job.watchType}`); // Use logEntry here
+    logEntry(`Starting job for URL: ${job.url} with watchType: ${job.watchType}`);
 
     let browser;
     let context;
     let page;
     let proxyUrlToUse = null;
-    const jobResult = {
-        jobId: job.id, url: job.url, videoId: job.videoId, platform: job.platform,
-        proxyUsed: 'None', status: 'initiated', error: null, log: []
-    };
-    // logEntry is already defined above to use jobScopedLogger correctly
+    // jobResult is already declared above
 
     try {
         const launchOptions = { headless: effectiveInput.headless, args: [...ANTI_DETECTION_ARGS] };
@@ -546,7 +529,7 @@ async function runSingleJob(job, effectiveInput, actorProxyConfiguration, custom
             await page.goto(searchUrl, { timeout: effectiveInput.timeout * 1000, waitUntil: 'domcontentloaded' });
             logEntry('Search results page loaded (domcontentloaded).');
             
-            await handleInitialConsent(page, job.platform, jobScopedLogger); // Pass jobScopedLogger
+            await handleInitialConsent(page, job.platform, jobScopedLogger);
 
             try {
                 await page.waitForLoadState('networkidle', { timeout: 20000 });
@@ -580,7 +563,7 @@ async function runSingleJob(job, effectiveInput, actorProxyConfiguration, custom
             logEntry(`Navigating (direct/referer) to ${job.url} with waitUntil: 'domcontentloaded' (timeout ${effectiveInput.timeout}s).`);
             await page.goto(job.url, { timeout: effectiveInput.timeout * 1000, waitUntil: 'domcontentloaded' });
             logEntry(`Initial navigation to ${job.url} (domcontentloaded) complete.`);
-            await handleInitialConsent(page, job.platform, jobScopedLogger); // Pass jobScopedLogger
+            await handleInitialConsent(page, job.platform, jobScopedLogger);
         }
         
         try {
@@ -615,7 +598,7 @@ async function runSingleJob(job, effectiveInput, actorProxyConfiguration, custom
             throw new Error(`Player element not visible after 60s: ${videoWaitError.message}`);
         }
 
-        const watchResult = await watchVideoOnPage(page, job, effectiveInput, jobScopedLogger); // Pass jobScopedLogger
+        const watchResult = await watchVideoOnPage(page, job, effectiveInput, jobScopedLogger);
         Object.assign(jobResult, watchResult);
 
     } catch (e) {

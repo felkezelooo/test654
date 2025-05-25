@@ -329,25 +329,28 @@ async function handleInitialConsent(page, platform, loggerToUse = GlobalLogger) 
     if (platform === 'youtube') {
         loggerToUse.info('Checking for YouTube consent dialog on current page (up to 3 attempts)...');
         
-        const mainDialogOuterSelector = 'ytd-consent-bump-v2-lightbox#lightbox'; // This is the actual overlay
-        const mainDialogInnerPaperSelector = 'tp-yt-paper-dialog.ytd-consent-bump-v2-lightbox'; // The paper dialog inside
+        const mainDialogOuterSelector = 'ytd-consent-bump-v2-lightbox#lightbox';
         const consentIframeSelectors = ['iframe[src*="consent.google.com"]', 'iframe[src*="consent.youtube.com"]'];
         
-        const acceptButtonSelectors = [
-            // Most specific for UK dialog based on your HTML & screenshot (within the paper-dialog)
-            `${mainDialogInnerPaperSelector} div.eom-buttons ytd-button-renderer button[aria-label*="Accept the use of cookies"]`,
-            `${mainDialogInnerPaperSelector} div.eom-buttons ytd-button-renderer button:has-text("Accept all")`,
-            // General selectors if the above fail, targeting within the ytd-consent-bump-v2-lightbox
-            `${mainDialogOuterSelector} button[aria-label*="Accept the use of cookies"]`,
-            `${mainDialogOuterSelector} button:has-text("Accept all")`,
-            // Broader fallbacks
+        // UK specific "Accept all" button within the dialog structure you provided.
+        // It's a ytd-button-renderer, containing a button with the aria-label and text.
+        const specificUkAcceptButtonSelector = 
+            `tp-yt-paper-dialog.ytd-consent-bump-v2-lightbox div.eom-buttons ytd-button-renderer:has(button[aria-label*="Accept the use of cookies"]):has-text("Accept all") button`;
+        
+        // A slightly less specific but still good selector for the "Accept all" button.
+        const generalUkAcceptButtonSelector = 
+            `ytd-consent-bump-v2-lightbox button[aria-label*="Accept the use of cookies"]:has-text("Accept all")`;
+
+        const alternativeAcceptSelectors = [ // Fallbacks
             'button[aria-label*="Accept all"]:visible',
             'button:has-text("Accept all"):visible',
+            'div[role="dialog"] button:has-text("Accept all"):visible'
         ];
+
+        let clickedConsent = false;
 
         for (let attempt = 1; attempt <= 3; attempt++) {
             loggerToUse.info(`Consent attempt ${attempt}`);
-            let clickedConsent = false;
             let consentFrame;
             let activeIframeLocator;
 
@@ -355,7 +358,7 @@ async function handleInitialConsent(page, platform, loggerToUse = GlobalLogger) 
             for (const frameSelector of consentIframeSelectors) {
                 try {
                     const frameLocator = page.locator(frameSelector).first();
-                    await frameLocator.waitFor({ state: 'visible', timeout: 5000 }); // Reduced timeout for faster check
+                    await frameLocator.waitFor({ state: 'visible', timeout: 5000 });
                     const elementHandle = await frameLocator.elementHandle();
                     if (elementHandle) {
                         consentFrame = await elementHandle.contentFrame();
@@ -369,27 +372,31 @@ async function handleInitialConsent(page, platform, loggerToUse = GlobalLogger) 
                                     clickedConsent = true; break;
                                 }
                             }
-                            if (clickedConsent) {
-                                activeIframeLocator = frameLocator;
-                                break; 
-                            }
+                            if (clickedConsent) { activeIframeLocator = frameLocator; break; }
                         }
                     }
                 } catch (e) { loggerToUse.debug(`Iframe selector ${frameSelector} not found/visible in attempt ${attempt}.`); }
             }
-             if (clickedConsent) break; // If clicked in iframe, exit outer loop
+            if (clickedConsent) break; 
 
             // 2. If no iframe or click in iframe failed, check main page dialog
             if (!consentFrame) {
                 loggerToUse.info('No iframe consent. Checking main page dialog...');
                  try {
-                    // First ensure the main dialog container is visible, otherwise clickIfExists will fail early
                     await page.locator(mainDialogOuterSelector).first().waitFor({ state: 'visible', timeout: 7000 });
                     loggerToUse.info('Main page consent dialog container is visible.');
-                    for (const selector of acceptButtonSelectors) {
-                        if (await clickIfExists(page, selector, 5000, loggerToUse)) {
-                            clickedConsent = true;
-                            break;
+                    
+                    // Try the most specific UK button selectors first
+                    if (await clickIfExists(page, specificUkAcceptButtonSelector, 5000, loggerToUse)) {
+                        clickedConsent = true;
+                    } else if (await clickIfExists(page, generalUkAcceptButtonSelector, 5000, loggerToUse)) {
+                        clickedConsent = true;
+                    } else {
+                        loggerToUse.debug('Specific UK selectors failed. Trying general alternatives.');
+                        for (const selector of alternativeAcceptSelectors) {
+                            if (await clickIfExists(page, selector, 5000, loggerToUse)) {
+                                clickedConsent = true; break;
+                            }
                         }
                     }
                 } catch (e) {
@@ -400,25 +407,28 @@ async function handleInitialConsent(page, platform, loggerToUse = GlobalLogger) 
             if (clickedConsent) {
                 loggerToUse.info('An "Accept" button was clicked. Waiting for navigation or dialog to disappear.');
                 try {
-                    await page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 15000 });
-                    loggerToUse.info('Page navigated after consent click.');
+                    // Crucially wait for navigation to complete as per your observation
+                    await page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 20000 });
+                    loggerToUse.info('Page navigated/reloaded after consent click.');
+                    // After navigation, the old dialog locators are stale.
+                    // We might need to re-check if a new dialog appeared, but for now, assume success.
                 } catch (navError) {
-                    loggerToUse.info(`No navigation detected after consent click (or timeout): ${navError.message.split('\n')[0]}. Checking if dialog is hidden.`);
+                    loggerToUse.info(`No full navigation detected after consent click (or timeout): ${navError.message.split('\n')[0]}. Checking if dialog is hidden as a fallback.`);
                     try {
                         const dialogToCheck = activeIframeLocator || page.locator(mainDialogOuterSelector).first();
                         await dialogToCheck.waitFor({ state: 'hidden', timeout: 10000 });
                         loggerToUse.info('Consent dialog/iframe is now hidden.');
                     } catch (hiddenError) {
                         loggerToUse.warning(`Consent dialog/iframe did not become hidden after click. Error: ${hiddenError.message.split('\n')[0]}. Continuing with caution.`);
-                        await page.waitForTimeout(3000); // Fallback delay
+                        await page.waitForTimeout(3000); 
                     }
                 }
-                return; // Successfully handled
+                return; 
             }
 
             if (attempt < 3) {
                 loggerToUse.info(`Consent not resolved in attempt ${attempt}, will retry after a short delay.`);
-                await page.waitForTimeout(2000); // Wait before retrying
+                await page.waitForTimeout(2500 + Math.random() * 1000); // Randomize delay slightly
             }
         }
         

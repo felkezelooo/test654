@@ -132,18 +132,15 @@ async function getVideoDuration(page, loggerToUse = GlobalLogger) {
 async function clickIfExists(page, selector, timeout = 3000, loggerToUse = GlobalLogger, inFrame = null) {
     const target = inFrame || page;
     try {
-        const element = target.locator(selector).first(); // Ensure we target the first match
+        const element = target.locator(selector).first();
         await element.waitFor({ state: 'visible', timeout });
-        // Try clicking normally first, with trial to prevent immediate throw on overlay
         try {
             await element.click({ timeout: timeout / 2, force: false, noWaitAfter: false, trial: true });
             (loggerToUse || console).info(`Clicked on selector: ${selector}${inFrame ? ' (in iframe)' : ''}`);
             return true;
         } catch (clickError) {
             (loggerToUse || console).debug(`Normal click failed for ${selector}, trying with force. Error: ${clickError.message.split('\n')[0]}`);
-            // If normal click fails (e.g. due to overlay but element is technically visible), try with force
-            // This force click is critical for some consent dialogs that Playwright detects as obscured
-            await element.click({ timeout: timeout / 2, force: true, noWaitAfter: false, trial: true });
+            await element.click({ timeout: timeout / 2, force: true, noWaitAfter: false, trial: true }); // Using force as a fallback
             (loggerToUse || console).info(`Clicked on selector with force: ${selector}${inFrame ? ' (in iframe)' : ''}`);
             return true;
         }
@@ -247,9 +244,14 @@ async function watchVideoOnPage(page, job, effectiveInput, loggerToUse = GlobalL
         watchTimeRequestedSec: 0, watchTimeActualSec: 0, durationFoundSec: null,
         startTime: new Date().toISOString(), endTime: null, error: null, log: []
     };
+    // Ensure loggerToUse has the .info, .warning etc. methods directly
     const logEntry = (msg, level = 'info') => {
         const formattedMessage = `[Job ${job.id.substring(0,6)}] ${msg}`;
-        (loggerToUse || console)[level](formattedMessage); 
+        if (loggerToUse && typeof loggerToUse[level] === 'function') {
+            loggerToUse[level](formattedMessage);
+        } else {
+            (GlobalLogger || console)[level](formattedMessage); // Fallback to GlobalLogger or console
+        }
         jobResult.log.push(`[${new Date().toISOString()}] [${level.toUpperCase()}] ${msg}`);
     };
 
@@ -329,25 +331,25 @@ async function watchVideoOnPage(page, job, effectiveInput, loggerToUse = GlobalL
 async function handleInitialConsent(page, platform, loggerToUse = GlobalLogger) {
     if (platform === 'youtube') {
         loggerToUse.info('Checking for YouTube consent dialog on current page...');
-        const consentDialogSelector = 'ytd-consent-bump-v2-lightbox, tp-yt-paper-dialog[class*="consent-bump"]';
+        // More specific selector for the main dialog container, especially for the UK version
+        const mainDialogSelector = 'ytd-consent-bump-v2-lightbox[id="lightbox"], tp-yt-paper-dialog.ytd-consent-bump-v2-lightbox';
         const consentIframeSelectors = ['iframe[src*="consent.google.com"]', 'iframe[src*="consent.youtube.com"]'];
         
         let consentFrame;
-        let dialogElementHandle;
+        let mainDialogLocator; // Use locator for the main dialog
+        let dialogIsVisible = false;
 
         // Check for iframe first
         for (const frameSelector of consentIframeSelectors) {
             try {
-                // Use page.locator().first() to get a Locator object
                 const frameLocator = page.locator(frameSelector).first();
-                // Wait for the locator to point to an element and for it to be visible
-                await frameLocator.waitFor({ state: 'visible', timeout: 7000 });
-                const elementHandle = await frameLocator.elementHandle(); // Get ElementHandle from Locator
+                await frameLocator.waitFor({ state: 'visible', timeout: 7000 }); // Increased timeout
+                const elementHandle = await frameLocator.elementHandle();
                 if (elementHandle) {
                     consentFrame = await elementHandle.contentFrame();
                     if (consentFrame) { 
                         loggerToUse.info(`Consent iframe found with selector: ${frameSelector}`);
-                        dialogElementHandle = frameLocator; // Keep locator for later check
+                        dialogIsVisible = true; 
                         break; 
                     }
                 }
@@ -357,19 +359,20 @@ async function handleInitialConsent(page, platform, loggerToUse = GlobalLogger) 
         }
 
         // If no iframe, check for main page dialog
-        if (!consentFrame) {
+        if (!dialogIsVisible) {
              try {
-                dialogElementHandle = page.locator(consentDialogSelector).first();
-                await dialogElementHandle.waitFor({ state: 'visible', timeout: 7000 });
+                mainDialogLocator = page.locator(mainDialogSelector).first();
+                await mainDialogLocator.waitFor({ state: 'visible', timeout: 10000 }); // Increased timeout
                 loggerToUse.info('Main page consent dialog detected.');
+                dialogIsVisible = true;
             } catch (e) {
                 loggerToUse.info('No consent dialog detected (iframe or main page) by initial visibility check.');
-                return; // No dialog found, nothing to do
+                return; 
             }
         }
         
-        if (!dialogElementHandle && !consentFrame) { // Double check if no dialog was found
-            loggerToUse.info('No consent dialog element handle or frame obtained.');
+        if (!dialogIsVisible) {
+            loggerToUse.info('No consent dialog element confirmed visible after checks.');
             return;
         }
 
@@ -379,35 +382,52 @@ async function handleInitialConsent(page, platform, loggerToUse = GlobalLogger) 
         loggerToUse.info(`Attempting to click "Accept all" or similar${targetLogSuffix}.`);
         
         const acceptSelectors = [
-            'tp-yt-paper-dialog.ytd-consent-bump-v2-lightbox button[aria-label*="Accept the use of cookies"]',
-            'tp-yt-paper-dialog.ytd-consent-bump-v2-lightbox button:has-text("Accept all")', 
+            // UK specific selectors based on your HTML and screenshot
+            'tp-yt-paper-dialog.ytd-consent-bump-v2-lightbox div.eom-buttons ytd-button-renderer button[aria-label*="Accept the use of cookies"]',
+            'tp-yt-paper-dialog.ytd-consent-bump-v2-lightbox div.eom-buttons ytd-button-renderer button:has-text("Accept all")',
+            // General selectors that were present
             'ytd-consent-bump-v2-lightbox button[aria-label*="Accept the use of cookies"]',
             'ytd-consent-bump-v2-lightbox button:has-text("Accept all")',
             'ytd-consent-bump-v2-lightbox ytd-button-renderer button:has-text("Accept all")',
-            'button[aria-label*="Accept all"]', 'button:has-text("Accept all")',
-            'button:has-text("Agree to all")', 'button[jsname*="LgbsSe"]', 
+            'button[aria-label*="Accept all"]', 
+            'button:has-text("Accept all")',
+            'button:has-text("Agree to all")', 
+            'button[jsname*="LgbsSe"]', 
             'div[role="button"]:has-text("Accept all")'
         ];
 
         let clickedConsent = false;
         for (const selector of acceptSelectors) {
-            // Pass the correct frame or page object to clickIfExists
             if (await clickIfExists(targetForClicks, selector, 7000, loggerToUse, consentFrame)) {
                 loggerToUse.info(`Clicked consent button "${selector}"${targetLogSuffix}. Waiting for dialog to disappear.`);
                 clickedConsent = true;
                 try {
-                    // Wait for the main dialog element to become hidden or detached
-                    if (dialogElementHandle) { // If we have a locator for the dialog
-                        await dialogElementHandle.waitFor({ state: 'hidden', timeout: 10000 });
-                         loggerToUse.info('Consent dialog element is now hidden.');
-                    } else if (consentFrame) { // Fallback if it was an iframe and we don't have a direct dialog handle
-                         loggerToUse.warning('Clicked in iframe, but no direct dialog handle for hidden check. Relying on timeout.');
-                         await page.waitForTimeout(5000); // General wait if specific element check is hard
+                    if (consentFrame) { 
+                        // If it was in an iframe, wait for the *iframe itself* to become hidden,
+                        // as the dialog inside might disappear but the iframe might linger.
+                        // Find the locator of the iframe that was used.
+                        let activeIframeLocator;
+                        for (const fs of consentIframeSelectors) {
+                            if (page.locator(fs).first() === (await consentFrame.ownerFrame().ownerFrameElement())?.locator().first() ) { // Heuristic
+                                activeIframeLocator = page.locator(fs).first();
+                                break;
+                            }
+                        }
+                        if (activeIframeLocator) {
+                             await activeIframeLocator.waitFor({ state: 'hidden', timeout: 10000 });
+                             loggerToUse.info('Consent iframe is now hidden.');
+                        } else {
+                            loggerToUse.warning('Could not re-identify iframe for hidden check, relying on general timeout.');
+                            await page.waitForTimeout(5000);
+                        }
+                    } else if (mainDialogLocator) { 
+                        await mainDialogLocator.waitFor({ state: 'hidden', timeout: 10000 });
+                        loggerToUse.info('Main page consent dialog element is now hidden.');
                     }
                     loggerToUse.info('Consent dialog seems to be dismissed.');
                 } catch (e) {
                     loggerToUse.warning(`Consent dialog did not reliably disappear after click, or timeout waiting for hidden state. Error: ${e.message.split('\n')[0]}`);
-                    await page.waitForTimeout(3000); // Additional small delay
+                    await page.waitForTimeout(3000); 
                 }
                 break; 
             }
@@ -418,13 +438,27 @@ async function handleInitialConsent(page, platform, loggerToUse = GlobalLogger) 
 
 
 async function runSingleJob(job, effectiveInput, actorProxyConfiguration, customProxyPool, logger) {
-    const jobScopedLogger = {
+    const jobScopedLogger = { // This is the logger object with .info, .warning, etc.
         info: (msg) => logger.info(`[Job ${job.id.substring(0,6)}] ${msg}`),
         warning: (msg) => logger.warning(`[Job ${job.id.substring(0,6)}] ${msg}`),
         error: (msg, data) => logger.error(`[Job ${job.id.substring(0,6)}] ${msg}`, data),
         debug: (msg) => logger.debug(`[Job ${job.id.substring(0,6)}] ${msg}`),
     };
-    jobScopedLogger.info(`Starting job for URL: ${job.url} with watchType: ${job.watchType}`);
+    
+    // This logEntry function is for adding to jobResult.log AND calling the jobScopedLogger
+    const logEntry = (msg, level = 'info') => {
+        const tsMsg = `[${new Date().toISOString()}] [${level.toUpperCase()}] ${msg}`;
+        // Call the appropriate method on jobScopedLogger for console/Apify log
+        if (jobScopedLogger && typeof jobScopedLogger[level] === 'function') {
+            jobScopedLogger[level](msg);
+        } else { // Fallback
+            (GlobalLogger || console)[level](`[Job ${job.id.substring(0,6)}] ${msg}`);
+        }
+        jobResult.log.push(tsMsg); // Always push to jobResult.log
+    };
+    
+    logEntry(`Starting job for URL: ${job.url} with watchType: ${job.watchType}`); // Use logEntry here
+
     let browser;
     let context;
     let page;
@@ -433,16 +467,7 @@ async function runSingleJob(job, effectiveInput, actorProxyConfiguration, custom
         jobId: job.id, url: job.url, videoId: job.videoId, platform: job.platform,
         proxyUsed: 'None', status: 'initiated', error: null, log: []
     };
-    const logEntry = (msg, level = 'info') => { // Keep original logEntry for jobResult
-        const tsMsg = `[${new Date().toISOString()}] [${level.toUpperCase()}] ${msg}`;
-        // Use jobScopedLogger for console output, and also push to jobResult.log
-        if (jobScopedLogger && typeof jobScopedLogger[level] === 'function') {
-            jobScopedLogger[level](msg);
-        } else { // Fallback if jobScopedLogger is somehow not ready
-            (GlobalLogger || console)[level](`[Job ${job.id.substring(0,6)}] ${msg}`);
-        }
-        jobResult.log.push(tsMsg);
-    };
+    // logEntry is already defined above to use jobScopedLogger correctly
 
     try {
         const launchOptions = { headless: effectiveInput.headless, args: [...ANTI_DETECTION_ARGS] };
@@ -542,7 +567,7 @@ async function runSingleJob(job, effectiveInput, actorProxyConfiguration, custom
                 logEntry('Video link found in search results. Scrolling into view if needed...');
                 await videoLink.scrollIntoViewIfNeeded({ timeout: 5000 }).catch(e => logEntry(`Scroll to video link failed: ${e.message.split('\n')[0]}`, 'debug'));
                 logEntry('Attempting to click video link.');
-                await videoLink.click({timeout: 10000, force: true });
+                await videoLink.click({timeout: 10000, force: true }); 
                 logEntry('Clicked video link. Waiting for navigation to video page...');
                 await page.waitForURL(`**/*${job.videoId}*`, { timeout: 45000, waitUntil: 'domcontentloaded' });
                 logEntry(`Navigated to video page: ${page.url()}`);

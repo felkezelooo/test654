@@ -129,15 +129,16 @@ async function getVideoDuration(page, loggerToUse = GlobalLogger) {
     return null;
 }
 
-async function clickIfExists(page, selector, timeout = 3000, loggerToUse = GlobalLogger) { 
+async function clickIfExists(page, selector, timeout = 3000, loggerToUse = GlobalLogger, frame = null) { 
+    const target = frame || page;
     try {
-        const element = page.locator(selector).first();
+        const element = target.locator(selector).first();
         await element.waitFor({ state: 'visible', timeout });
         await element.click({ timeout: timeout / 2, force: false, noWaitAfter: false });
-        (loggerToUse || console).info(`Clicked on selector: ${selector}`);
+        (loggerToUse || console).info(`Clicked on selector: ${selector}${frame ? ' in iframe' : ''}`);
         return true;
     } catch (e) {
-        (loggerToUse || console).debug(`Selector not found/clickable: ${selector} - Error: ${e.message.split('\n')[0]}`);
+        (loggerToUse || console).debug(`Selector not found/clickable: ${selector}${frame ? ' in iframe' : ''} - Error: ${e.message.split('\n')[0]}`);
         return false;
     }
 }
@@ -181,19 +182,18 @@ async function handleAds(page, platform, effectiveInput, loggerToUse = GlobalLog
     (loggerToUse || console).info('Ad handling finished or timed out.');
 }
 
-async function ensureVideoPlaying(page, playButtonSelectors, logEntry) {
+async function ensureVideoPlaying(page, playButtonSelectors, logEntry, loggerToUse = GlobalLogger) {
     logEntry('Ensuring video is playing...');
-    for (let attempt = 0; attempt < 3; attempt++) {
+    for (let attempt = 0; attempt < 3; attempt++) { 
         const isPaused = await page.evaluate(() => {
             const video = document.querySelector('video.html5-main-video, video.rumble-player-video');
             if (video) {
                 if (video.paused) {
-                    // Attempt to play directly in page context
                     video.play().catch(e => console.warn('Direct video.play() in evaluate failed:', e.message)); 
                 }
                 return video.paused;
             }
-            return true; // Assume paused if no video element
+            return true; 
         }).catch(e => { logEntry(`Error evaluating video state for play: ${e.message}`, 'warn'); return true; });
 
         if (!isPaused) {
@@ -203,9 +203,9 @@ async function ensureVideoPlaying(page, playButtonSelectors, logEntry) {
 
         logEntry(`Video is paused (attempt ${attempt + 1}), trying to click play buttons.`);
         for (const selector of playButtonSelectors) {
-            if (await clickIfExists(page, selector, 1500, {info: logEntry, debug: logEntry, warning: logEntry, error: logEntry })) { // Pass a compatible logger
+            if (await clickIfExists(page, selector, 1500, loggerToUse )) { 
                 logEntry(`Clicked play button: ${selector}`);
-                await page.waitForTimeout(500); // Give it a moment to react
+                await page.waitForTimeout(500); 
                 const stillPaused = await page.evaluate(() => document.querySelector('video')?.paused);
                 if (!stillPaused) {
                     logEntry('Video started playing after click.');
@@ -213,7 +213,6 @@ async function ensureVideoPlaying(page, playButtonSelectors, logEntry) {
                 }
             }
         }
-        // Fallback: click the video element itself
         logEntry('Trying to click video element directly to play.');
         await page.locator('video').first().click({ timeout: 2000, force: true, trial: true }).catch(e => logEntry(`Failed to click video element (trial): ${e.message}`, 'warn'));
         await page.waitForTimeout(500);
@@ -222,7 +221,7 @@ async function ensureVideoPlaying(page, playButtonSelectors, logEntry) {
             logEntry('Video started playing after general video click.');
             return true;
         }
-        if (attempt < 2) await page.waitForTimeout(1000); // Wait before retrying
+        if (attempt < 2) await page.waitForTimeout(1000); 
     }
     logEntry('Failed to ensure video is playing after multiple attempts.', 'warn');
     return false;
@@ -250,7 +249,7 @@ async function watchVideoOnPage(page, job, effectiveInput, loggerToUse = GlobalL
             ? ['.ytp-large-play-button', '.ytp-play-button[aria-label*="Play"]', 'video.html5-main-video']
             : ['.rumbles-player-play-button', 'video.rumble-player-video'];
         
-        await ensureVideoPlaying(page, playButtonSelectors, logEntry);
+        await ensureVideoPlaying(page, playButtonSelectors, logEntry, loggerToUse);
         
         await page.evaluate(() => { const v = document.querySelector('video'); if(v) { v.muted=false; v.volume=0.05+Math.random()*0.1; }}).catch(e => logEntry(`Unmute/volume failed: ${e.message}`, 'debug'));
 
@@ -265,7 +264,7 @@ async function watchVideoOnPage(page, job, effectiveInput, loggerToUse = GlobalL
 
         let currentActualWatchTime = 0;
         const watchIntervalMs = 5000;
-        const maxWatchLoops = Math.ceil(targetWatchTimeSec / (watchIntervalMs / 1000)) + 12; // +12 loops (1 min) for buffer
+        const maxWatchLoops = Math.ceil(targetWatchTimeSec / (watchIntervalMs / 1000)) + 12; 
 
         for (let i = 0; i < maxWatchLoops; i++) {
             logEntry(`Watch loop ${i+1}/${maxWatchLoops}. Ads check.`);
@@ -273,19 +272,18 @@ async function watchVideoOnPage(page, job, effectiveInput, loggerToUse = GlobalL
             const videoState = await page.evaluate(() => { const v = document.querySelector('video'); return v ? { ct:v.currentTime, p:v.paused, e:v.ended, rs:v.readyState, ns:v.networkState } : null; }).catch(e => { logEntry(`Video state error: ${e.message}`, 'warn'); return null; });
             
             if (!videoState) {
-                 // Try to recover if video element temporarily not found (e.g. during ad transition)
                 logEntry('Video element not found in evaluate, attempting to find again.', 'warn');
                 await page.waitForTimeout(1000);
                 const videoExists = await page.locator('video').count() > 0;
                 if (!videoExists) throw new Error('Video element disappeared definitively.');
-                continue; // Retry loop
+                continue; 
             }
 
             logEntry(`State: time=${videoState.ct?.toFixed(2)}, paused=${videoState.p}, ended=${videoState.e}, ready=${videoState.rs}, net=${videoState.ns}`);
             
             if (videoState.p && !videoState.e) {
                 logEntry('Video is paused, attempting to ensure it plays.');
-                await ensureVideoPlaying(page, playButtonSelectors, logEntry);
+                await ensureVideoPlaying(page, playButtonSelectors, logEntry, loggerToUse);
             }
             
             currentActualWatchTime = videoState.ct || 0;
@@ -296,7 +294,7 @@ async function watchVideoOnPage(page, job, effectiveInput, loggerToUse = GlobalL
                 break; 
             }
             
-            if (i % 6 === 0) { // Simulate mouse move every ~30s
+            if (i%6===0) { 
                  await page.mouse.move(Math.random()*500,Math.random()*300,{steps:5}).catch(()=>{}); 
                  logEntry('Simulated mouse move.','debug');
             }
@@ -434,7 +432,14 @@ async function runSingleJob(job, effectiveInput, actorProxyConfiguration, custom
                 logEntry(`Navigated to video page: ${page.url()}`);
             } catch (searchError) {
                 logEntry(`Could not find or click video link for "${keyword}" (ID: ${job.videoId}). Error: ${searchError.message.split('\n')[0]}`, 'error');
-                if (page && ApifyModule.Actor.isAtHome()) { /* ... screenshot logic ... */ }
+                if (page && ApifyModule.Actor.isAtHome()) { 
+                    try {
+                        const screenshotBuffer = await page.screenshot({fullPage: true, timeout:10000});
+                        const key = `SCREENSHOT_SEARCH_FAIL_${job.id.replace(/-/g,'')}`;
+                        if (ApifyModule.Actor.setValue) await ApifyModule.Actor.setValue(key, screenshotBuffer, {contentType: 'image/png'});
+                        logEntry(`Screenshot on search fail: ${key}`);
+                    } catch(e){ logEntry('Failed screenshot on search fail.', 'warn');}
+                }
                 throw new Error(`Failed to find video via search: ${searchError.message}`);
             }
         } else { 
@@ -472,7 +477,8 @@ async function runSingleJob(job, effectiveInput, actorProxyConfiguration, custom
                 ];
                 let clickedInFrame = false;
                 for (const selector of acceptSelectors) {
-                    if (await consentFrame.locator(selector).click({timeout: 5000, trial: true}).then(() => true).catch(() => false) ) {
+                    // Pass logger to clickIfExists
+                    if (await clickIfExists(page, selector, 5000, logger, consentFrame) ) { // Pass consentFrame to clickIfExists
                         logEntry(`Clicked consent button "${selector}" in iframe.`);
                         await page.waitForTimeout(3000 + Math.random() * 2000); 
                         clickedInFrame = true; break;
@@ -488,13 +494,16 @@ async function runSingleJob(job, effectiveInput, actorProxyConfiguration, custom
                     'ytd-consent-bump-v2-lightbox button[aria-label*="Accept"]',
                     '#lightbox ytd-button-renderer[class*="consent"] button'
                 ];
+                let mainConsentClicked = false;
                 for (const selector of mainPageSelectors) {
                     if (await clickIfExists(page, selector, 5000, logger)) { 
                         logEntry(`Clicked main page consent button: ${selector}`);
                         await page.waitForTimeout(2000 + Math.random() * 1000); 
+                        mainConsentClicked = true;
                         break;
                     }
                 }
+                if (!mainConsentClicked) logEntry('No main page consent button clicked.', 'debug');
             }
         }
         
@@ -704,7 +713,7 @@ async function actorMainLogic() {
             await Promise.race(Array.from(activeWorkers));
         }
         
-        const jobPromise = runSingleJob(job, effectiveInput, actorProxyConfiguration, effectiveInput.proxyUrls, GlobalLogger)
+        const jobPromise = runSingleJob(job, effectiveInput, actorProxyConfiguration, effectiveInput.proxyUrls, GlobalLogger) // Pass GlobalLogger
             .then(async (result) => {
                 overallResults.details.push(result);
                 result.status === 'success' ? overallResults.successfulJobs++ : overallResults.failedJobs++;
@@ -717,7 +726,7 @@ async function actorMainLogic() {
                     status: 'catastrophic_loop_failure', 
                     error: error.message, 
                     stack: error.stack, 
-                    log: [`[${new Date().toISOString()}] [ERROR] Unhandled promise: ${error.message}`]
+                    log: [`[${new Date().toISOString()}] [ERROR] Unhandled promise in main loop: ${error.message}`]
                 };
                 overallResults.details.push(errRes); 
                 overallResults.failedJobs++;

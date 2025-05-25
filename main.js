@@ -391,7 +391,9 @@ async function runSingleJob(job, effectiveInput, actorProxyConfiguration, custom
         context = await browser.newContext({
             bypassCSP: true, ignoreHTTPSErrors: true,
             viewport: { width: 1280 + Math.floor(Math.random() * 200), height: 720 + Math.floor(Math.random() * 100) },
-            locale: 'en-US', timezoneId: 'America/New_York', javaScriptEnabled: true,
+            locale: 'en-GB', // Changed locale for UK testing
+            timezoneId: 'Europe/London', // Changed timezone for UK testing
+            javaScriptEnabled: true,
         });
 
         if (job.watchType === 'referer' && job.refererUrl) {
@@ -406,7 +408,7 @@ async function runSingleJob(job, effectiveInput, actorProxyConfiguration, custom
         if (job.watchType === 'search' && job.searchKeywords && job.searchKeywords.length > 0) {
             const keyword = job.searchKeywords[Math.floor(Math.random() * job.searchKeywords.length)];
             logEntry(`Performing search for keyword: "${keyword}" to find video ID: ${job.videoId}`);
-            const searchUrl = job.platform === 'youtube' ? `https://www.youtube.com/results?search_query=${encodeURIComponent(keyword)}` : `https://rumble.com/search/video?q=${encodeURIComponent(keyword)}`;
+            const searchUrl = job.platform === 'youtube' ? `https://www.youtube.com/results?search_query=${encodeURIComponent(keyword)}&gl=GB&hl=en-GB` : `https://rumble.com/search/video?q=${encodeURIComponent(keyword)}`;
             
             logEntry(`Navigating to search results: ${searchUrl}`);
             await page.goto(searchUrl, { timeout: effectiveInput.timeout * 1000, waitUntil: 'domcontentloaded' });
@@ -465,36 +467,59 @@ async function runSingleJob(job, effectiveInput, actorProxyConfiguration, custom
 
             if (consentFrame) {
                 logEntry('Consent iframe content frame obtained. Attempting to click "Accept all" or similar.');
-                const acceptSelectors = [
-                    'button[aria-label*="Accept all"]', 'button:has-text("Accept all")',
-                    'button:has-text("Agree to all")', 'button[jsname*="LgbsSe"]', 
+                // Selectors for buttons within the iframe
+                const acceptSelectorsInFrame = [
+                    'button[aria-label*="Accept all"]', 
+                    'button:has-text("Accept all")',
+                    'button:has-text("Agree to all")', 
+                    'button[jsname*="LgbsSe"]', // Google's common jsname for accept
                     'div[role="button"]:has-text("Accept all")'
                 ];
                 let clickedInFrame = false;
-                for (const selector of acceptSelectors) {
-                    if (await consentFrame.locator(selector).click({timeout: 5000, trial: true}).then(() => true).catch(() => false) ) {
+                for (const selector of acceptSelectorsInFrame) {
+                    try {
+                        await consentFrame.locator(selector).click({timeout: 5000, trial: true});
                         logEntry(`Clicked consent button "${selector}" in iframe.`);
                         await page.waitForTimeout(3000 + Math.random() * 2000); 
-                        clickedInFrame = true; break;
+                        clickedInFrame = true; 
+                        break;
+                    } catch (frameClickError) {
+                        logEntry(`Failed to click "${selector}" in iframe. Trying next. Error: ${frameClickError.message.split('\n')[0]}`, 'debug');
                     }
                 }
                 if (!clickedInFrame) logEntry('Could not click standard consent buttons in iframe.', 'warn');
             } else {
                 logEntry('No consent iframe detected. Checking main page for consent buttons.');
+                // UPDATED mainPageSelectors for better UK dialog handling
                 const mainPageSelectors = [
-                    'button[aria-label*="Accept all"]', 'button[aria-label*="Agree to all"]', 'button:has-text("Accept all")',
-                    'tp-yt-paper-button[aria-label*="Accept all"]', 'ytd-button-renderer:has-text("Accept all") button',
-                    '#dialog footer button.yt-spec-button-shape-next--filled', 
-                    'ytd-consent-bump-v2-lightbox button[aria-label*="Accept"]',
-                    '#lightbox ytd-button-renderer[class*="consent"] button'
+                    // Most specific for the new UK dialog based on provided HTML structure
+                    'tp-yt-paper-dialog.ytd-consent-bump-v2-lightbox button[aria-label*="Accept the use of cookies"]',
+                    'tp-yt-paper-dialog.ytd-consent-bump-v2-lightbox button:has-text("Accept all")',
+                    'ytd-consent-bump-v2-lightbox button[aria-label*="Accept the use of cookies"]',
+                    'ytd-consent-bump-v2-lightbox button:has-text("Accept all")',
+                    'ytd-consent-bump-v2-lightbox ytd-button-renderer button:has-text("Accept all")',
+                    
+                    // Original more general selectors as fallbacks
+                    'button[aria-label*="Accept all"]',
+                    'button:has-text("Accept all")',
+                    'button[aria-label*="Agree to all"]',
+                    'tp-yt-paper-button[aria-label*="Accept all"]', // Older paper elements
+                    'ytd-button-renderer:has-text("Accept all") button', // General renderer
+                    '#dialog footer button.yt-spec-button-shape-next--filled', // Older #dialog structure with footer
+                    'ytd-button-renderer button[aria-label*="Reject all"] + ytd-button-renderer button', // Try to find Accept if Reject is present (common pattern)
+                    'form[action*="consent.youtube.com"] button[type="submit"]:has-text("Accept all")', // Form-based consent
+                    'div[role="dialog"] button:has-text("Accept all")' // Generic dialog button
                 ];
+                let clickedOnMainPage = false;
                 for (const selector of mainPageSelectors) {
                     if (await clickIfExists(page, selector, 5000, logger)) { 
                         logEntry(`Clicked main page consent button: ${selector}`);
-                        await page.waitForTimeout(2000 + Math.random() * 1000); 
+                        await page.waitForTimeout(2500 + Math.random() * 1500); 
+                        clickedOnMainPage = true;
                         break;
                     }
                 }
+                if (!clickedOnMainPage) logEntry('Could not find or click any known main page consent buttons.', 'warn');
             }
         }
         

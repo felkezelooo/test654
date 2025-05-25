@@ -129,18 +129,29 @@ async function getVideoDuration(page, loggerToUse = GlobalLogger) {
     return null;
 }
 
-async function clickIfExists(page, selector, timeout = 3000, loggerToUse = GlobalLogger) { 
+async function clickIfExists(page, selector, timeout = 3000, loggerToUse = GlobalLogger, inFrame = null) {
+    const target = inFrame || page;
     try {
-        const element = page.locator(selector).first();
+        const element = target.locator(selector).first();
         await element.waitFor({ state: 'visible', timeout });
-        await element.click({ timeout: timeout / 2, force: false, noWaitAfter: false });
-        (loggerToUse || console).info(`Clicked on selector: ${selector}`);
-        return true;
+        // Try clicking normally first
+        try {
+            await element.click({ timeout: timeout / 2, force: false, noWaitAfter: false, trial: true });
+            (loggerToUse || console).info(`Clicked on selector: ${selector}${inFrame ? ' (in iframe)' : ''}`);
+            return true;
+        } catch (clickError) {
+            (loggerToUse || console).debug(`Normal click failed for ${selector}, trying with force. Error: ${clickError.message.split('\n')[0]}`);
+            // If normal click fails (e.g. due to overlay but element is technically visible), try with force
+            await element.click({ timeout: timeout / 2, force: true, noWaitAfter: false, trial: true });
+            (loggerToUse || console).info(`Clicked on selector with force: ${selector}${inFrame ? ' (in iframe)' : ''}`);
+            return true;
+        }
     } catch (e) {
-        (loggerToUse || console).debug(`Selector not found/clickable: ${selector} - Error: ${e.message.split('\n')[0]}`);
+        (loggerToUse || console).debug(`Selector not found/clickable: ${selector}${inFrame ? ' (in iframe)' : ''} - Error: ${e.message.split('\n')[0]}`);
         return false;
     }
 }
+
 
 async function handleAds(page, platform, effectiveInput, loggerToUse = GlobalLogger) { 
     (loggerToUse || console).info('Starting ad handling logic.');
@@ -405,6 +416,66 @@ async function runSingleJob(job, effectiveInput, actorProxyConfiguration, custom
         page = await context.newPage();
         await page.setViewportSize({ width: 1200 + Math.floor(Math.random()*120), height: 700 + Math.floor(Math.random()*80) });
 
+        // Handle consent dialog BEFORE trying to click video links
+        const handleInitialConsent = async (currentPage, platform) => {
+            if (platform === 'youtube') {
+                logEntry('Checking for YouTube consent dialog on current page...');
+                const consentFrameSelectors = ['iframe[src*="consent.google.com"]', 'iframe[src*="consent.youtube.com"]'];
+                let consentFrame;
+                for (const frameSelector of consentFrameSelectors) {
+                    const frameHandle = await currentPage.waitForSelector(frameSelector, {timeout: 7000}).catch(() => null);
+                    if (frameHandle) {
+                        consentFrame = await frameHandle.contentFrame();
+                        if (consentFrame) { logEntry(`Consent iframe found with selector: ${frameSelector}`); break; }
+                    }
+                }
+
+                if (consentFrame) {
+                    logEntry('Consent iframe content frame obtained. Attempting to click "Accept all" or similar.');
+                    const acceptSelectorsInFrame = [
+                        'button[aria-label*="Accept all"]', 'button:has-text("Accept all")',
+                        'button:has-text("Agree to all")', 'button[jsname*="LgbsSe"]', 
+                        'div[role="button"]:has-text("Accept all")'
+                    ];
+                    let clickedInFrame = false;
+                    for (const selector of acceptSelectorsInFrame) {
+                        if (await clickIfExists(currentPage, selector, 5000, logger, consentFrame)) {
+                            await currentPage.waitForTimeout(3000 + Math.random() * 2000); 
+                            clickedInFrame = true; break;
+                        }
+                    }
+                    if (!clickedInFrame) logEntry('Could not click standard consent buttons in iframe.', 'warn');
+                } else {
+                    logEntry('No consent iframe detected. Checking main page for consent buttons.');
+                    const mainPageSelectors = [
+                        'tp-yt-paper-dialog.ytd-consent-bump-v2-lightbox button[aria-label*="Accept the use of cookies"]',
+                        'tp-yt-paper-dialog.ytd-consent-bump-v2-lightbox button:has-text("Accept all")',
+                        'ytd-consent-bump-v2-lightbox button[aria-label*="Accept the use of cookies"]',
+                        'ytd-consent-bump-v2-lightbox button:has-text("Accept all")',
+                        'ytd-consent-bump-v2-lightbox ytd-button-renderer button:has-text("Accept all")',
+                        'button[aria-label*="Accept all"]', 'button:has-text("Accept all")',
+                        'button[aria-label*="Agree to all"]',
+                        'tp-yt-paper-button[aria-label*="Accept all"]',
+                        'ytd-button-renderer:has-text("Accept all") button',
+                        '#dialog footer button.yt-spec-button-shape-next--filled',
+                        'ytd-button-renderer button[aria-label*="Reject all"] + ytd-button-renderer button',
+                        'form[action*="consent.youtube.com"] button[type="submit"]:has-text("Accept all")',
+                        'div[role="dialog"] button:has-text("Accept all")'
+                    ];
+                    let clickedOnMainPage = false;
+                    for (const selector of mainPageSelectors) {
+                        if (await clickIfExists(currentPage, selector, 7000, logger)) { 
+                            await currentPage.waitForTimeout(2500 + Math.random() * 1500); 
+                            clickedOnMainPage = true;
+                            break;
+                        }
+                    }
+                    if (!clickedOnMainPage) logEntry('Could not find or click any known main page consent buttons (after initial navigation).', 'warn');
+                }
+            }
+        };
+
+
         if (job.watchType === 'search' && job.searchKeywords && job.searchKeywords.length > 0) {
             const keyword = job.searchKeywords[Math.floor(Math.random() * job.searchKeywords.length)];
             logEntry(`Performing search for keyword: "${keyword}" to find video ID: ${job.videoId}`);
@@ -413,6 +484,9 @@ async function runSingleJob(job, effectiveInput, actorProxyConfiguration, custom
             logEntry(`Navigating to search results: ${searchUrl}`);
             await page.goto(searchUrl, { timeout: effectiveInput.timeout * 1000, waitUntil: 'domcontentloaded' });
             logEntry('Search results page loaded (domcontentloaded).');
+            
+            await handleInitialConsent(page, job.platform); // Handle consent on search results page
+
             try {
                 await page.waitForLoadState('networkidle', { timeout: 20000 });
                 logEntry('Network idle on search page.');
@@ -430,6 +504,13 @@ async function runSingleJob(job, effectiveInput, actorProxyConfiguration, custom
             try {
                 await videoLink.waitFor({ state: 'visible', timeout: 45000 });
                 logEntry('Video link found in search results. Clicking...');
+                // Try to scroll into view if not clickable due to overlay
+                try {
+                    await videoLink.scrollIntoViewIfNeeded({ timeout: 5000 });
+                    logEntry('Scrolled video link into view if needed.');
+                } catch(scrollErr) {
+                    logEntry(`Could not scroll video link into view: ${scrollErr.message.split('\n')[0]}`, 'debug');
+                }
                 await videoLink.click({timeout: 10000});
                 logEntry('Clicked video link. Waiting for navigation to video page...');
                 await page.waitForURL(`**/*${job.videoId}*`, { timeout: 45000, waitUntil: 'domcontentloaded' });
@@ -443,6 +524,7 @@ async function runSingleJob(job, effectiveInput, actorProxyConfiguration, custom
             logEntry(`Navigating (direct/referer) to ${job.url} with waitUntil: 'domcontentloaded' (timeout ${effectiveInput.timeout}s).`);
             await page.goto(job.url, { timeout: effectiveInput.timeout * 1000, waitUntil: 'domcontentloaded' });
             logEntry(`Initial navigation to ${job.url} (domcontentloaded) complete.`);
+            await handleInitialConsent(page, job.platform); // Handle consent on direct video page
         }
         
         try {
@@ -451,76 +533,6 @@ async function runSingleJob(job, effectiveInput, actorProxyConfiguration, custom
             logEntry('Network is idle.');
         } catch(e) {
             logEntry(`Network did not become idle within 30s: ${e.message.split('\n')[0]}. Proceeding anyway.`, 'warn');
-        }
-
-        if (job.platform === 'youtube') {
-            logEntry('Checking for YouTube consent dialog...');
-            const consentFrameSelectors = ['iframe[src*="consent.google.com"]', 'iframe[src*="consent.youtube.com"]'];
-            let consentFrame;
-            for (const frameSelector of consentFrameSelectors) {
-                const frameHandle = await page.waitForSelector(frameSelector, {timeout: 7000}).catch(() => null);
-                if (frameHandle) {
-                    consentFrame = await frameHandle.contentFrame();
-                    if (consentFrame) { logEntry(`Consent iframe found with selector: ${frameSelector}`); break; }
-                }
-            }
-
-            if (consentFrame) {
-                logEntry('Consent iframe content frame obtained. Attempting to click "Accept all" or similar.');
-                // Selectors for buttons within the iframe
-                const acceptSelectorsInFrame = [
-                    'button[aria-label*="Accept all"]', 
-                    'button:has-text("Accept all")',
-                    'button:has-text("Agree to all")', 
-                    'button[jsname*="LgbsSe"]', // Google's common jsname for accept
-                    'div[role="button"]:has-text("Accept all")'
-                ];
-                let clickedInFrame = false;
-                for (const selector of acceptSelectorsInFrame) {
-                    try {
-                        await consentFrame.locator(selector).click({timeout: 5000, trial: true});
-                        logEntry(`Clicked consent button "${selector}" in iframe.`);
-                        await page.waitForTimeout(3000 + Math.random() * 2000); 
-                        clickedInFrame = true; 
-                        break;
-                    } catch (frameClickError) {
-                        logEntry(`Failed to click "${selector}" in iframe. Trying next. Error: ${frameClickError.message.split('\n')[0]}`, 'debug');
-                    }
-                }
-                if (!clickedInFrame) logEntry('Could not click standard consent buttons in iframe.', 'warn');
-            } else {
-                logEntry('No consent iframe detected. Checking main page for consent buttons.');
-                // UPDATED mainPageSelectors for better UK dialog handling
-                const mainPageSelectors = [
-                    // Most specific for the new UK dialog based on provided HTML structure
-                    'tp-yt-paper-dialog.ytd-consent-bump-v2-lightbox button[aria-label*="Accept the use of cookies"]',
-                    'tp-yt-paper-dialog.ytd-consent-bump-v2-lightbox button:has-text("Accept all")',
-                    'ytd-consent-bump-v2-lightbox button[aria-label*="Accept the use of cookies"]',
-                    'ytd-consent-bump-v2-lightbox button:has-text("Accept all")',
-                    'ytd-consent-bump-v2-lightbox ytd-button-renderer button:has-text("Accept all")',
-                    
-                    // Original more general selectors as fallbacks
-                    'button[aria-label*="Accept all"]',
-                    'button:has-text("Accept all")',
-                    'button[aria-label*="Agree to all"]',
-                    'tp-yt-paper-button[aria-label*="Accept all"]', // Older paper elements
-                    'ytd-button-renderer:has-text("Accept all") button', // General renderer
-                    '#dialog footer button.yt-spec-button-shape-next--filled', // Older #dialog structure with footer
-                    'ytd-button-renderer button[aria-label*="Reject all"] + ytd-button-renderer button', // Try to find Accept if Reject is present (common pattern)
-                    'form[action*="consent.youtube.com"] button[type="submit"]:has-text("Accept all")', // Form-based consent
-                    'div[role="dialog"] button:has-text("Accept all")' // Generic dialog button
-                ];
-                let clickedOnMainPage = false;
-                for (const selector of mainPageSelectors) {
-                    if (await clickIfExists(page, selector, 5000, logger)) { 
-                        logEntry(`Clicked main page consent button: ${selector}`);
-                        await page.waitForTimeout(2500 + Math.random() * 1500); 
-                        clickedOnMainPage = true;
-                        break;
-                    }
-                }
-                if (!clickedOnMainPage) logEntry('Could not find or click any known main page consent buttons.', 'warn');
-            }
         }
         
         const playerSelector = job.platform === 'youtube' ? '#movie_player video.html5-main-video, ytd-player video' : '.rumble-player-video-wrapper video, video.rumble-player';

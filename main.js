@@ -35,7 +35,9 @@ const ANTI_DETECTION_ARGS = [
 
 let GlobalLogger; 
 
-async function applyAntiDetectionScripts(pageOrContext) { 
+// CRITICAL CHANGE: Removing any script that overrides document.cookie.
+// We will only apply standard anti-detection measures.
+async function applyAntiDetectionScripts(pageOrContext) { // Renamed
     const antiDetectionScript = () => {
         if (navigator.webdriver === true) Object.defineProperty(navigator, 'webdriver', { get: () => false });
         if (navigator.languages && !navigator.languages.includes('en-US')) Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
@@ -133,20 +135,21 @@ async function getVideoDuration(page, loggerToUse = GlobalLogger) {
     return null;
 }
 
+// Using the AI's suggested clickIfExists (removed trial: true)
 async function clickIfExists(pageOrFrame, selector, timeout = 3000, loggerToUse = GlobalLogger, isFrameContext = false) {
     const logSuffix = isFrameContext ? ' (in iframe)' : '';
     try {
         const element = pageOrFrame.locator(selector).first();
         await element.waitFor({ state: 'visible', timeout }); 
         try {
-            await element.click({ timeout: timeout / 2, force: false, noWaitAfter: false }); // Removed trial: true
+            await element.click({ timeout: timeout / 2, force: false, noWaitAfter: false });
             (loggerToUse || console).info(`Clicked on selector: ${selector}${logSuffix}`);
             return true;
         } catch (clickError) {
             (loggerToUse || console).debug(`Normal click failed for ${selector}${logSuffix}, trying with force. Error: ${clickError.message.split('\n')[0]}`);
-            const elementForForce = pageOrFrame.locator(selector).first(); // Re-locate before force click
+            const elementForForce = pageOrFrame.locator(selector).first(); // Re-locate
             await elementForForce.waitFor({ state: 'visible', timeout }); // Re-wait
-            await elementForForce.click({ timeout: timeout / 2, force: true, noWaitAfter: false });  // Removed trial: true
+            await elementForForce.click({ timeout: timeout / 2, force: true, noWaitAfter: false });
             (loggerToUse || console).info(`Clicked on selector with force: ${selector}${logSuffix}`);
             return true;
         }
@@ -331,40 +334,41 @@ async function watchVideoOnPage(page, job, effectiveInput, loggerToUse = GlobalL
     return jobResult;
 }
 
+// Implementing the AI's suggested consent handler (Copilot's v6 / refined version)
 async function handleYouTubeConsent(page, loggerToUse = GlobalLogger) {
-    loggerToUse.info('Checking for YouTube/Google consent dialog (v5 - with page refresh handling)...');
+    loggerToUse.info('Checking for YouTube/Google consent dialog (v6 - AI suggested)...');
     
     const mainDialogOuterSelector = 'ytd-consent-bump-v2-lightbox#lightbox'; 
-    const mainDialogInnerSelector = `${mainDialogOuterSelector} tp-yt-paper-dialog[role="dialog"]`; // Corrected this line
+    const mainDialogInnerSelector = `${mainDialogOuterSelector} tp-yt-paper-dialog[role="dialog"]`;
+    
     const consentIframeSelectors = [
         'iframe[src*="consent.google.com"]',
         'iframe[src*="consent.youtube.com"]'
     ];
     
-    const acceptButtonSelectorsOnMainPage = [ // Renamed for clarity
-        `${mainDialogInnerSelector} button[aria-label*="Accept the use of cookies and other data for the purposes described"]`,
-        `${mainDialogInnerSelector} button:has-text("Accept all")`, 
-        `${mainDialogOuterSelector} button[aria-label*="Accept all"]`, // Targets button inside the outer lightbox
+    const acceptButtonSelectorsOnMainPage = [
+        `${mainDialogInnerSelector} button[aria-label="Accept the use of cookies and other data for the purposes described"]`,
+        `${mainDialogInnerSelector} button:has-text("Accept all")`,
+        `${mainDialogOuterSelector} button[aria-label="Accept the use of cookies and other data for the purposes described"]`,
         `${mainDialogOuterSelector} button:has-text("Accept all")`,
         'button[aria-label*="Accept all"]:visible',
-        'button:has-text("Accept all"):visible',
-        'button:has-text("AGREE"):visible',
-        'div[role="dialog"] button:has-text("Accept all")' 
+        'button:has-text("Accept all"):visible'
     ];
+
     const acceptButtonSelectorsInIframe = [ 
         'button[aria-label*="Accept all"]', 
-        'button:has-text("Accept all")', 
-        'button[jsname*="LgbsSe"]' 
+        'button:has-text("Accept all")',   
+        'button[jsname*="LgbsSe"]'         
     ];
 
     let clickedConsent = false;
     let consentHandledBy = null; 
+    let activeIframeLocator = null; // To store the locator of the found iframe for later checks
 
     for (let attempt = 1; attempt <= 3; attempt++) {
         loggerToUse.info(`Consent attempt ${attempt}`);
-        let activeIframeLocator = null;
-
-        await page.waitForTimeout(1000 + (attempt * 500)); 
+        
+        await page.waitForTimeout(1000 + (attempt * 500)); // Small delay before each attempt
 
         // 1. Check for iframes first
         for (const frameSelector of consentIframeSelectors) {
@@ -377,6 +381,7 @@ async function handleYouTubeConsent(page, loggerToUse = GlobalLogger) {
                     if (frame) { 
                         loggerToUse.info(`Consent iframe found: ${frameSelector}. Trying to click 'Accept all' inside.`);
                         for (const selector of acceptButtonSelectorsInIframe) {
+                            // Pass true for isFrameContext to clickIfExists
                             if (await clickIfExists(frame, selector, 3000, loggerToUse, true)) {
                                 clickedConsent = true; consentHandledBy = 'iframe'; activeIframeLocator = frameLocator; break;
                             }
@@ -390,12 +395,12 @@ async function handleYouTubeConsent(page, loggerToUse = GlobalLogger) {
 
         // 2. If no iframe or click in iframe failed, check main page dialog
         if (!consentHandledBy) { 
-            loggerToUse.info('No iframe consent clicked or iframe not found. Checking main page dialog.');
+            loggerToUse.info('No iframe consent. Checking main page dialog.');
             try {
-                const dialogLocator = page.locator(mainDialogOuterSelector).first(); // Use outer for visibility check
-                await dialogLocator.waitFor({ state: 'visible', timeout: 7000 });
+                const dialogLocator = page.locator(mainDialogOuterSelector).first();
+                await dialogLocator.waitFor({ state: 'visible', timeout: 7000 + (attempt * 1000) }); // Increase timeout for main dialog
                 loggerToUse.info(`Main page consent dialog container (${mainDialogOuterSelector}) is visible. Attempting clicks.`);
-                for (const selector of acceptButtonSelectorsOnMainPage) { // Use specific list for main page
+                for (const selector of acceptButtonSelectorsOnMainPage) {
                     if (await clickIfExists(page, selector, 5000, loggerToUse)) {
                         clickedConsent = true; consentHandledBy = 'mainPage'; break;
                     }
@@ -414,16 +419,18 @@ async function handleYouTubeConsent(page, loggerToUse = GlobalLogger) {
     } 
 
     if (clickedConsent) {
-        loggerToUse.info(`An "Accept" button was clicked (via ${consentHandledBy}). Waiting for page to fully stabilize after potential refresh (up to 25s).`);
+        loggerToUse.info(`An "Accept" button was clicked (via ${consentHandledBy}). Waiting for page to stabilize after potential refresh (up to 25s).`);
         try {
             await page.waitForLoadState('domcontentloaded', { timeout: 25000 });
             loggerToUse.info('Page reached "domcontentloaded" after consent click (potential refresh handled).');
-            await page.waitForTimeout(2000); 
+            await page.waitForTimeout(2500); // Give JS a bit more time
             
-            const dialogStillVisible = await page.locator(mainDialogOuterSelector).first().isVisible({timeout: 5000}).catch(() => false);
-            if (dialogStillVisible) {
+            const dialogToCheck = activeIframeLocator || page.locator(mainDialogOuterSelector).first();
+            const isStillVisible = await dialogToCheck.isVisible({timeout: 5000}).catch(() => false);
+
+            if (isStillVisible) {
                 loggerToUse.warning('Consent dialog STILL VISIBLE after click and page stabilization. This indicates a problem.');
-                if (page && ApifyModule.Actor.isAtHome()) {
+                if (page && typeof ApifyModule !== 'undefined' && ApifyModule.Actor && ApifyModule.Actor.isAtHome()) {
                     const screenshotBuffer = await page.screenshot({fullPage: true, timeout: 10000});
                     await ApifyModule.Actor.setValue(`SCREENSHOT_CONSENT_STILL_VISIBLE_${uuidv4().substring(0,8)}`, screenshotBuffer, { contentType: 'image/png' });
                 }
@@ -432,9 +439,10 @@ async function handleYouTubeConsent(page, loggerToUse = GlobalLogger) {
                 loggerToUse.info('Consent dialog confirmed hidden after click and stabilization.');
             }
         } catch (stabilizationError) {
-            loggerToUse.warning(`Error or timeout during page stabilization after consent click: ${stabilizationError.message.split('\n')[0]}.`);
+            loggerToUse.warning(`Error or timeout during page stabilization after consent click: ${stabilizationError.message.split('\n')[0]}. Checking final visibility.`);
             try {
-                await page.locator(mainDialogOuterSelector).first().waitFor({ state: 'hidden', timeout: 10000 });
+                const dialogToCheck = activeIframeLocator || page.locator(mainDialogOuterSelector).first();
+                await dialogToCheck.waitFor({ state: 'hidden', timeout: 10000 });
                 loggerToUse.info('Consent dialog confirmed hidden despite earlier stabilization timeout.');
             } catch (finalHiddenError) {
                 loggerToUse.error(`Consent dialog did NOT become hidden after all waits. Error: ${finalHiddenError.message.split('\n')[0]}`);
@@ -446,7 +454,7 @@ async function handleYouTubeConsent(page, loggerToUse = GlobalLogger) {
     }
     
     loggerToUse.error('Failed to handle consent dialog after all attempts (no button successfully clicked or confirmed dismissed).');
-    if (page && ApifyModule.Actor.isAtHome()) {
+    if (page && typeof ApifyModule !== 'undefined' && ApifyModule.Actor && ApifyModule.Actor.isAtHome()) {
         try {
             loggerToUse.info('Attempting to capture HTML/Screenshot on final consent failure...');
             const htmlContent = await page.content({timeout: 10000}).catch(e => `Failed to get HTML: ${e.message}`);
@@ -552,7 +560,7 @@ async function runSingleJob(job, effectiveInput, actorProxyConfiguration, custom
             javaScriptEnabled: true,
         });
 
-        await applyAntiDetectionScripts(context); // No more cookieFixScript here
+        await applyAntiDetectionScripts(context); 
 
 
         if (job.watchType === 'referer' && job.refererUrl) {
@@ -573,8 +581,15 @@ async function runSingleJob(job, effectiveInput, actorProxyConfiguration, custom
             logEntry('Search results page loaded (domcontentloaded).');
             
             const consentSuccess = await handleYouTubeConsent(page, jobScopedLogger);
-            if (!consentSuccess && (await page.locator('ytd-consent-bump-v2-lightbox#lightbox').isVisible({timeout:1000}).catch(()=>false)) ) {
-                throw new Error('Failed to handle consent dialog, and it appears to still be present.');
+            if (!consentSuccess) {
+                 // Check one last time if dialog is still there; if so, it's a hard fail for this job.
+                const dialogStillPresent = await page.locator(mainDialogOuterSelector) // Assuming mainDialogOuterSelector is globally accessible or defined in scope
+                                                    .first().isVisible({timeout:2000}).catch(() => false);
+                if (dialogStillPresent) {
+                    throw new Error('Failed to handle consent dialog, and it remains visible.');
+                } else {
+                    logEntry('Consent dialog not clicked, but also not visible. Proceeding with caution.', 'warn');
+                }
             }
 
 
@@ -611,8 +626,14 @@ async function runSingleJob(job, effectiveInput, actorProxyConfiguration, custom
             await page.goto(job.url, { timeout: effectiveInput.timeout * 1000, waitUntil: 'domcontentloaded' });
             logEntry(`Initial navigation to ${job.url} (domcontentloaded) complete.`);
             const consentSuccess = await handleYouTubeConsent(page, jobScopedLogger);
-            if (!consentSuccess && (await page.locator('ytd-consent-bump-v2-lightbox#lightbox').isVisible({timeout:1000}).catch(()=>false)) ) {
-                 throw new Error('Failed to handle consent dialog, and it appears to still be present.');
+            if (!consentSuccess) {
+                const dialogStillPresent = await page.locator(mainDialogOuterSelector) 
+                                                    .first().isVisible({timeout:2000}).catch(() => false);
+                if (dialogStillPresent) {
+                     throw new Error('Failed to handle consent dialog, and it appears to still be present.');
+                } else {
+                    logEntry('Consent dialog not clicked, but also not visible. Proceeding with caution.', 'warn');
+                }
             }
         }
         
@@ -658,7 +679,7 @@ async function runSingleJob(job, effectiveInput, actorProxyConfiguration, custom
         logEntry(`Critical error in job ${job.url}: ${e.message}\n${e.stack}`, 'error');
         jobResult.status = 'failure';
         jobResult.error = e.message + (e.stack ? `\nStack: ${e.stack}` : '');
-        if (page && typeof page.screenshot === 'function' && ApifyModule.Actor.isAtHome()) { 
+        if (page && typeof ApifyModule !== 'undefined' && ApifyModule.Actor && ApifyModule.Actor.isAtHome()) { 
             try {
                 logEntry('Attempting to capture HTML on critical error...');
                 const htmlContent = await page.content({timeout: 10000}).catch(err => `Failed to get HTML: ${err.message}`);

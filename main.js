@@ -2,14 +2,14 @@
 console.log('MAIN.JS: Script execution started.');
 console.log(`MAIN.JS: Node.js version: ${process.version}`);
 
-const ApifyModule = require('apify'); // Ensure Apify is at the top
-const playwright = require('playwright'); // Ensure playwright is at the top
-const { v4: uuidv4 } = require('uuid'); // Ensure uuid is at the top
+const ApifyModule = require('apify');
+const playwright = require('playwright');
+const { v4: uuidv4 } = require('uuid');
 
 console.log('MAIN.JS: Basic modules imported.');
 
-// --- NEW BROWSER LAUNCH ARGUMENTS --- (From Claude's latest suggestion)
-const ANTI_DETECTION_ARGS_NEW = [ // Renamed to avoid conflict if old one is still somewhere
+// --- NEW BROWSER LAUNCH ARGUMENTS ---
+const ANTI_DETECTION_ARGS_NEW = [
     '--no-sandbox',
     '--disable-setuid-sandbox',
     '--disable-dev-shm-usage',
@@ -49,10 +49,9 @@ const ANTI_DETECTION_ARGS_NEW = [ // Renamed to avoid conflict if old one is sti
 ];
 console.log('MAIN.JS: ANTI_DETECTION_ARGS_NEW defined.');
 
-let GlobalLogger; // Defined globally
+let GlobalLogger;
 
 // --- GEO HELPER FUNCTIONS ---
-// ... (getTimezoneForProxy, getLocaleForCountry, getYouTubeSearchUrl - FULL IMPLEMENTATIONS from previous complete code)
 function getTimezoneForProxy(proxyCountry, useProxiesSetting) {
     if (!useProxiesSetting || !proxyCountry) {
         (GlobalLogger || console).debug('[GeoHelper] No proxy country or proxies not used, defaulting timezone to America/New_York.');
@@ -91,6 +90,7 @@ function getTimezoneForProxy(proxyCountry, useProxiesSetting) {
     (GlobalLogger || console).debug(`[GeoHelper] ProxyCountry '${proxyCountry}' not in map, defaulting timezone to America/New_York.`);
     return 'America/New_York';
 }
+
 function getLocaleForCountry(countryCode) {
     if (!countryCode) {
         (GlobalLogger || console).debug('[GeoHelper] No country code for locale, defaulting to en-US.');
@@ -116,6 +116,7 @@ function getLocaleForCountry(countryCode) {
     (GlobalLogger || console).debug(`[GeoHelper] CountryCode '${countryCode}' not in locale map, defaulting to en-US.`);
     return 'en-US';
 }
+
 function getYouTubeSearchUrl(keyword, countryCode, detectedLocale) {
     const gl = (countryCode || 'US').toUpperCase();
     const hl = detectedLocale.replace('_', '-');
@@ -125,10 +126,116 @@ function getYouTubeSearchUrl(keyword, countryCode, detectedLocale) {
 console.log('MAIN.JS: Geo helper functions defined.');
 
 // --- NEW HELPER FUNCTIONS (from latest suggestions) ---
-async function setPreventiveConsentCookies(page, loggerToUse) { /* ... Full implementation ... */ }
-async function debugPageState(page, loggerToUse, context = '') { /* ... Full implementation ... */ }
-async function debugClickElement(page, selector, loggerToUse) { /* ... Full implementation ... */ }
-// (Full implementations for setPreventiveConsentCookies, debugPageState, debugClickElement are in the previous complete code block)
+async function setPreventiveConsentCookies(page, loggerToUse) {
+    try {
+        await page.context().addCookies([
+            { name: 'CONSENT', value: 'PENDING+987', domain: '.youtube.com', path: '/' },
+            { name: 'SOCS', value: 'CAESEwgDEgk0ODE3Nzk3MjQaAmVuIAEaBgiA_LmvBg', domain: '.youtube.com', path: '/', secure: true, sameSite: 'None'},
+            { name: '__Secure-YT-GDPR', value: '1', domain: '.youtube.com', path: '/', secure: true, sameSite: 'Lax' }
+        ]);
+        loggerToUse.info('Set preventive consent cookies (CONSENT=PENDING+987, SOCS, __Secure-YT-GDPR=1).');
+    } catch (e) {
+        loggerToUse.debug(`Failed to set preventive cookies: ${e.message}`);
+    }
+}
+
+async function debugPageState(page, loggerToUse, context = '') {
+    if (!page || page.isClosed()) {
+        loggerToUse.warn(`Page debug ${context}: Page is closed or undefined. Cannot get state.`);
+        return null;
+    }
+    try {
+        const pageInfo = await page.evaluate(() => {
+            const info = {
+                url: window.location.href,
+                title: document.title,
+                bodyTextSample: document.body ? document.body.innerText.substring(0, 200).replace(/\s+/g, ' ') : 'No body',
+                consentElements: [],
+                buttons: []
+            };
+            const consentSelectors = ['ytd-consent-bump-v2-lightbox', '[role="dialog"]', 'tp-yt-paper-dialog', '.consent-bump', '#consent-bump', '[aria-modal="true"]'];
+            consentSelectors.forEach(sel => {
+                document.querySelectorAll(sel).forEach((elem, i) => {
+                    const style = window.getComputedStyle(elem);
+                    info.consentElements.push({
+                        tag: elem.tagName,
+                        id: elem.id,
+                        class: elem.className,
+                        selector: sel,
+                        index: i,
+                        visible: style.display !== 'none' && style.visibility !== 'hidden' && style.opacity !== '0' && elem.offsetHeight > 0,
+                        hasButtons: elem.querySelectorAll('button').length,
+                        text: (elem.innerText || '').substring(0, 100).replace(/\s+/g, ' ')
+                    });
+                });
+            });
+            document.querySelectorAll('button').forEach((btn, i) => {
+                const text = (btn.innerText || btn.textContent || '').trim();
+                const label = (btn.getAttribute('aria-label') || '').trim();
+                if (text.toLowerCase().includes('accept') || label.toLowerCase().includes('accept') || text.toLowerCase().includes('agree') || label.toLowerCase().includes('agree')) {
+                    const style = window.getComputedStyle(btn);
+                    info.buttons.push({
+                        index: i,
+                        text: text.substring(0, 50),
+                        label: label.substring(0, 50),
+                        visible: style.display !== 'none' && style.visibility !== 'hidden' && btn.offsetHeight > 0,
+                        id: btn.id,
+                        class: btn.className
+                    });
+                }
+            });
+            return info;
+        });
+        loggerToUse.info(`Page debug context [${context}]: ${JSON.stringify(pageInfo, null, 2)}`);
+        return pageInfo;
+    } catch (e) {
+        loggerToUse.warn(`Page debug for context [${context}] failed: ${e.message}`);
+        return null;
+    }
+}
+
+async function debugClickElement(page, selector, loggerToUse) {
+    if (!page || page.isClosed()) {
+        loggerToUse.warn(`DebugClickElement: Page is closed for selector ${selector}.`);
+        return null;
+    }
+    try {
+        const element = page.locator(selector).first();
+        const isPresent = await element.count() > 0;
+        if (!isPresent) {
+            loggerToUse.debug(`DebugClickElement: Element ${selector} not found.`);
+            return { isPresent: false };
+        }
+        const isVisible = await element.isVisible().catch(() => false);
+        const isEnabled = await element.isEnabled().catch(() => false);
+        const boundingBox = await element.boundingBox().catch(() => null);
+        let inViewport = false;
+        if (boundingBox && page.viewportSize()) {
+            const viewport = page.viewportSize();
+                 inViewport = boundingBox.x >= 0 && boundingBox.y >= 0 &&
+                                 boundingBox.x + boundingBox.width <= viewport.width &&
+                                 boundingBox.y + boundingBox.height <= viewport.height;
+        }
+        const isActuallyClickable = await page.evaluate((sel) => {
+            const elem = document.querySelector(sel);
+            if (!elem) return 'not-found';
+            const rect = elem.getBoundingClientRect();
+            if (rect.width === 0 || rect.height === 0) return 'zero-size';
+            const centerX = rect.left + rect.width / 2;
+            const centerY = rect.top + rect.height / 2;
+            const topElement = document.elementFromPoint(centerX, centerY);
+            if (!topElement) return 'no-element-at-point';
+            if (topElement === elem || elem.contains(topElement)) return 'clickable';
+            return `obscured-by-${topElement.tagName}#${topElement.id}.${topElement.className}`;
+        }, selector).catch(e => `eval-error: ${e.message}`);
+        const debugInfo = { selector, isPresent, isVisible, isEnabled, boundingBox, inViewport, isActuallyClickable };
+        loggerToUse.info(`DebugClickElement for ${selector}: ${JSON.stringify(debugInfo)}`);
+        return debugInfo;
+    } catch (e) {
+        loggerToUse.warn(`DebugClickElement for ${selector} failed: ${e.message}`);
+        return null;
+    }
+}
 
 // --- NEW COMPREHENSIVE ANTI-DETECTION SCRIPT ---
 async function applyAntiDetectionScripts(pageOrContext, detectedTimezoneId) {
@@ -136,7 +243,7 @@ async function applyAntiDetectionScripts(pageOrContext, detectedTimezoneId) {
         // Webdriver Traces
         try {
             Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
-            delete navigator.__proto__.webdriver; 
+            delete navigator.__proto__.webdriver;
         } catch (e) { console.debug('[Anti-Detect] Failed basic webdriver spoof:', e.message); }
         try { if (navigator.webdriver) delete navigator.webdriver; } catch (e) { console.debug('[Anti-Detect] Failed direct delete navigator.webdriver:', e.message); }
 
@@ -158,7 +265,7 @@ async function applyAntiDetectionScripts(pageOrContext, detectedTimezoneId) {
             const mimeTypesList = [];
             const pluginsList = pluginsData.map(p => {
                 const mimeTypesForPlugin = p.mimeTypes.map(mt => {
-                    const mimeType = { ...mt, enabledPlugin: null /* will be circular */ };
+                    const mimeType = { ...mt, enabledPlugin: null };
                     Object.setPrototypeOf(mimeType, MimeType.prototype);
                     mimeTypesList.push(mimeType);
                     return mimeType;
@@ -174,7 +281,7 @@ async function applyAntiDetectionScripts(pageOrContext, detectedTimezoneId) {
             Object.defineProperty(navigator, 'mimeTypes', { get: () => mimeTypesList, configurable: true, enumerable: true });
         } catch (e) { console.debug('[Anti-Detect] Failed plugin/mimeType spoof:', e.message); }
 
-        // Languages Spoofing (Assuming en-GB from context, can be made dynamic)
+        // Languages Spoofing
         try { Object.defineProperty(navigator, 'languages', { get: () => ['en-GB', 'en-US', 'en'], configurable: true }); } catch (e) {}
         try { Object.defineProperty(navigator, 'language', { get: () => 'en-GB', configurable: true }); } catch (e) {}
 
@@ -238,14 +345,14 @@ async function applyAntiDetectionScripts(pageOrContext, detectedTimezoneId) {
 
         // Window Dimensions
         try {
-            Object.defineProperty(window, 'outerHeight', { get: () => window.innerHeight + (Math.floor(Math.random() * 15) + 75), configurable: true });
+            Object.defineProperty(window, 'outerHeight', { get: () => window.innerHeight + (Math.floor(Math.random() * 20) + 75), configurable: true }); // Adjusted offset
             Object.defineProperty(window, 'outerWidth', { get: () => window.innerWidth + (Math.floor(Math.random() * 3)), configurable: true });
         } catch (e) { console.debug('[Anti-Detect] Failed outerHeight/Width spoof:', e.message); }
 
         // Timezone and Intl
         try {
             const getOffset = (tz) => { try { const d=new Date(),u=new Date(d.getTime()+(d.getTimezoneOffset()*60000)),t=new Date(u.toLocaleString("en-US",{timeZone:tz})); return Math.round((u.getTime()-t.getTime())/60000); } catch(e){return 0;} };
-            const targetOffset = getOffset(timezoneId); // timezoneId is passed from Node.js
+            const targetOffset = getOffset(timezoneId);
             Date.prototype.getTimezoneOffset = function() { return targetOffset; };
             if (typeof Intl !== 'undefined' && Intl.DateTimeFormat) {
                 const originalResolvedOptions = Intl.DateTimeFormat.prototype.resolvedOptions;
@@ -274,7 +381,7 @@ async function applyAntiDetectionScripts(pageOrContext, detectedTimezoneId) {
             if (navigator.getBattery) navigator.getBattery = () => Promise.resolve({ charging: Math.random()>0.5, chargingTime:Math.random()>0.5?0:Math.floor(Math.random()*10000), dischargingTime: Math.random()>0.5?Infinity:Math.floor(Math.random()*10000)+3600, level:Math.random()*0.4+0.6, onchargingchange:null, onchargingtimechange:null, ondischargingtimechange:null, onlevelchange:null });
         } catch(e) { console.debug('[Anti-Detect] Failed battery API spoof: ', e.message); }
 
-    }; // End of comprehensiveAntiDetectionScript
+    };
 
     (GlobalLogger || console).debug(`[AntiDetection] Injecting COMPREHENSIVE anti-detection script with dynamic timezoneId: ${detectedTimezoneId}`);
     if (pageOrContext.addInitScript) {
@@ -308,7 +415,6 @@ async function simulateHumanBehavior(page, loggerToUse, stage = 'general') {
             await page.mouse.wheel(0, scrollAmount);
             await page.waitForTimeout(300 + Math.random() * 700);
         }
-        // Removed problematic random interactions like right-click for now
         loggerToUse.debug(`Human behavior simulation (stage: ${stage}) completed.`);
     } catch (e) {
         loggerToUse.debug(`Human behavior simulation (stage: ${stage}) failed: ${e.message}`);
@@ -318,289 +424,8 @@ console.log('MAIN.JS: Human behavior simulation function defined.');
 
 
 // --- ALL OTHER HELPER FUNCTIONS ---
-// ... (extractVideoId, getVideoDuration, clickIfExists, handleAds, ensureVideoPlaying, watchVideoOnPage,
-// handleYouTubeConsent - with updated checkForConsentIndicators, waitForVideoPlayer - FULL IMPLEMENTATIONS from previous complete code)
-
-async function extractVideoId(url) {
-    try {
-        const urlObj = new URL(url);
-        if (url.includes('youtube.com') || url.includes('youtu.be')) {
-            return urlObj.searchParams.get('v') || urlObj.pathname.substring(1);
-        } else if (url.includes('rumble.com')) {
-            const pathParts = urlObj.pathname.split('/');
-            const lastPart = pathParts[pathParts.length - 1];
-            return lastPart.split('-')[0] || lastPart;
-        }
-    } catch (error) {
-        (GlobalLogger || console).error(`Error extracting video ID from URL ${url}: ${error.message}`);
-    }
-    return null;
-}
-
-async function getVideoDuration(page, loggerToUse = GlobalLogger) {
-    (loggerToUse || console).info('Attempting to get video duration.');
-    for (let i = 0; i < 15; i++) {
-        try {
-            const duration = await page.evaluate(() => {
-                const video = document.querySelector('video.html5-main-video, video.rumble-player-video');
-                return video ? video.duration : null;
-            });
-            if (duration && duration !== Infinity && duration > 0) {
-                (loggerToUse || console).info(`Video duration found: ${duration} seconds.`);
-                return duration;
-            }
-        } catch (e) {
-            (loggerToUse || console).debug(`Attempt ${i+1} to get duration failed: ${e.message}`);
-        }
-        await new Promise(resolve => setTimeout(resolve, 1000));
-    }
-    (loggerToUse || console).warning('Could not determine video duration after 15 seconds.');
-    return null;
-}
-
-async function clickIfExists(pageOrFrame, selector, timeout = 3000, loggerToUse = GlobalLogger, isFrameContext = false) {
-    const logSuffix = isFrameContext ? ' (in iframe)' : '';
-    try {
-        const element = pageOrFrame.locator(selector).first();
-        await element.waitFor({ state: 'visible', timeout });
-        try {
-            await element.click({ timeout: timeout / 2, force: false, noWaitAfter: false });
-            (loggerToUse || console).info(`Clicked on selector: ${selector}${logSuffix}`);
-            return true;
-        } catch (clickError) {
-            (loggerToUse || console).debug(`Normal click failed for ${selector}${logSuffix}, trying with force. Error: ${clickError.message.split('\n')[0]}`);
-            const elementForForce = pageOrFrame.locator(selector).first();
-            await elementForForce.waitFor({ state: 'visible', timeout });
-            await elementForForce.click({ timeout: timeout / 2, force: true, noWaitAfter: false });
-            (loggerToUse || console).info(`Clicked on selector with force: ${selector}${logSuffix}`);
-            return true;
-        }
-    } catch (e) {
-        (loggerToUse || console).debug(`Selector not found/clickable: ${selector}${logSuffix} - Error: ${e.message.split('\n')[0]}`);
-        return false;
-    }
-}
-
-
-async function handleAds(page, platform, effectiveInput, loggerToUse = GlobalLogger) {
-    (loggerToUse || console).info('Starting ad handling logic.');
-    const adCheckInterval = 3000;
-    let adWatchLoop = 0;
-    const maxAdLoopIterations = Math.ceil((effectiveInput.maxSecondsAds * 1000) / adCheckInterval) + 5;
-
-    for (adWatchLoop = 0; adWatchLoop < maxAdLoopIterations; adWatchLoop++) {
-        let isAdPlaying = false; let canSkip = false; let adCurrentTime = adWatchLoop * (adCheckInterval / 1000);
-        if (platform === 'youtube') {
-            isAdPlaying = await page.locator('.ytp-ad-player-overlay-instream-info, .video-ads .ad-showing').count() > 0;
-            if (isAdPlaying) { (loggerToUse || console).info('YouTube ad detected.'); canSkip = await page.locator('.ytp-ad-skip-button-modern, .ytp-ad-skip-button').count() > 0; }
-        } else if (platform === 'rumble') {
-            isAdPlaying = await page.locator('.video-ad-indicator, .ima-ad-container :not([style*="display: none"]):not([style*="visibility: hidden"])').count() > 0;
-             if (isAdPlaying) { (loggerToUse || console).info('Rumble ad detected.'); canSkip = await page.locator('button[aria-label*="Skip Ad"], div[class*="skip-button"], .videoAdUiSkipButton').count() > 0; }
-        }
-        if (!isAdPlaying) { (loggerToUse || console).info('No ad currently playing or ad finished.'); break; }
-        const minSkipTime = Array.isArray(effectiveInput.skipAdsAfter) && effectiveInput.skipAdsAfter.length > 0 ? parseInt(String(effectiveInput.skipAdsAfter[0]),10) : 5;
-        if (effectiveInput.autoSkipAds && canSkip) {
-            (loggerToUse || console).info('Attempting to skip ad (autoSkipAds).');
-            await clickIfExists(page, '.ytp-ad-skip-button-modern, .ytp-ad-skip-button, button[aria-label*="Skip Ad"], div[class*="skip-button"], .videoAdUiSkipButton', 1000, loggerToUse);
-            await page.waitForTimeout(2000 + Math.random() * 1000); continue;
-        }
-        if (adCurrentTime >= minSkipTime && canSkip) {
-            (loggerToUse || console).info(`Ad has played for ~${adCurrentTime.toFixed(1)}s, attempting to skip (skipAdsAfter).`);
-            await clickIfExists(page, '.ytp-ad-skip-button-modern, .ytp-ad-skip-button, button[aria-label*="Skip Ad"], div[class*="skip-button"], .videoAdUiSkipButton', 1000, loggerToUse);
-            await page.waitForTimeout(2000 + Math.random() * 1000); continue;
-        }
-        if (adCurrentTime >= effectiveInput.maxSecondsAds) {
-             (loggerToUse || console).info(`Ad has played for ~${adCurrentTime.toFixed(1)}s (maxSecondsAds reached).`);
-             if (canSkip) await clickIfExists(page, '.ytp-ad-skip-button-modern, .ytp-ad-skip-button, button[aria-label*="Skip Ad"], div[class*="skip-button"], .videoAdUiSkipButton', 1000, loggerToUse);
-             else (loggerToUse || console).info('Max ad watch time reached, but cannot skip yet.');
-             break;
-        }
-        await page.waitForTimeout(adCheckInterval);
-    }
-    if (adWatchLoop >= maxAdLoopIterations) (loggerToUse || console).warning('Max ad loop iterations reached.');
-    (loggerToUse || console).info('Ad handling finished or timed out.');
-}
-
-async function ensureVideoPlaying(page, playButtonSelectors, loggerToUse) {
-    loggerToUse.info('Ensuring video is playing with enhanced interaction...');
-    for (let attempt = 0; attempt < 5; attempt++) {
-        const videoState = await page.evaluate(() => {
-            const video = document.querySelector('video.html5-main-video, video.rumble-player-video');
-            if (video) return { paused: video.paused, currentTime: video.currentTime, readyState: video.readyState, muted: video.muted };
-            return null;
-        }).catch(e => { loggerToUse.warn(`Error getting video state in ensureVideoPlaying: ${e.message}`); return null; });
-
-        if (!videoState) {
-            loggerToUse.warn('No video element found in ensureVideoPlaying');
-            if (attempt < 4) { await page.waitForTimeout(1000); continue; }
-            return false;
-        }
-        if (!videoState.paused) {
-            loggerToUse.info(`Video is playing (attempt ${attempt + 1}). Time: ${videoState.currentTime?.toFixed(2)}s`);
-            return true;
-        }
-        loggerToUse.info(`Video is paused (attempt ${attempt + 1}). CT: ${videoState.currentTime?.toFixed(2)}s. RS: ${videoState.readyState}. Muted: ${videoState.muted}. Trying play strategies.`);
-
-        try {
-            loggerToUse.debug('Strategy 1: Clicking video element directly.');
-            await page.locator('video.html5-main-video, video.rumble-player-video').first().click({ timeout: 2000, force: true });
-            await page.waitForTimeout(1000 + Math.random() * 500);
-            if (await page.evaluate(() => document.querySelector('video.html5-main-video, video.rumble-player-video')?.paused === false)) {
-                loggerToUse.info('Video started playing after video element click.'); return true;
-            }
-            loggerToUse.debug('Video still paused after video element click.');
-        } catch (e) { loggerToUse.debug(`Video element click failed: ${e.message}`); }
-
-        loggerToUse.debug('Strategy 2: Trying play buttons.');
-        for (const selector of playButtonSelectors) {
-            if (await clickIfExists(page, selector, 2000, loggerToUse)) {
-                await page.waitForTimeout(1000 + Math.random() * 500);
-                if (await page.evaluate(() => document.querySelector('video.html5-main-video, video.rumble-player-video')?.paused === false)) {
-                    loggerToUse.info('Video started playing after play button click.'); return true;
-                }
-                loggerToUse.debug(`Video still paused after clicking ${selector}.`);
-            }
-        }
-
-        try {
-            loggerToUse.debug('Strategy 3: Attempting JavaScript video.play().');
-            await page.evaluate(() => {
-                const video = document.querySelector('video.html5-main-video, video.rumble-player-video');
-                if (video) {
-                    if (video.muted) { console.log('[In-Page Eval] Video is muted, unmuting before play.'); video.muted = false; }
-                    video.play().then(() => console.log('[In-Page Eval] video.play() promise resolved.')).catch(err => console.warn('[In-Page Eval] JS video.play() failed:', err.message, err.name));
-                } else console.warn('[In-Page Eval] Video element not found for JS play.');
-            });
-            await page.waitForTimeout(1500 + Math.random() * 500);
-            if (await page.evaluate(() => document.querySelector('video.html5-main-video, video.rumble-player-video')?.paused === false)) {
-                loggerToUse.info('Video started playing after JavaScript play().'); return true;
-            }
-            loggerToUse.debug('Video still paused after JavaScript play() attempt.');
-        } catch (e) { loggerToUse.debug(`JavaScript play evaluation failed: ${e.message}`); }
-
-        try {
-            loggerToUse.debug('Strategy 4: Attempting Spacebar press.');
-            await page.locator('body').first().focus({timeout:1000}).catch(e => loggerToUse.debug('Failed to focus body for spacebar.'));
-            await page.keyboard.press('Space');
-            await page.waitForTimeout(1000 + Math.random() * 500);
-            if (await page.evaluate(() => document.querySelector('video.html5-main-video, video.rumble-player-video')?.paused === false)) {
-                loggerToUse.info('Video started playing after spacebar press.'); return true;
-            }
-            loggerToUse.debug('Video still paused after spacebar press.');
-        } catch (e) { loggerToUse.debug(`Spacebar press failed: ${e.message}`); }
-
-        if (attempt < 4) {
-            loggerToUse.debug(`Waiting ${2000 + attempt * 500}ms before next play attempt...`);
-            await page.waitForTimeout(2000 + attempt * 500);
-        }
-    }
-    loggerToUse.error('Failed to start video playback after all attempts');
-    return false;
-}
-
-async function watchVideoOnPage(page, job, effectiveInput, loggerToUse = GlobalLogger) {
-    const jobResult = {
-        jobId: job.id, url: job.url, videoId: job.videoId, platform: job.platform, status: 'pending',
-        watchTimeRequestedSec: 0, watchTimeActualSec: 0, durationFoundSec: null,
-        startTime: new Date().toISOString(), endTime: null, error: null, log: []
-    };
-    const logEntry = (msg, level = 'info') => {
-        const formattedMessage = `[Job ${job.id.substring(0,6)}] ${msg}`;
-        if (loggerToUse && typeof loggerToUse[level] === 'function') {
-            loggerToUse[level](formattedMessage);
-        } else { (GlobalLogger || console)[level](formattedMessage); }
-        jobResult.log.push(`[${new Date().toISOString()}] [${level.toUpperCase()}] ${msg}`);
-    };
-
-    try {
-        logEntry('Handling initial ads.');
-        await handleAds(page, job.platform, effectiveInput, loggerToUse);
-        logEntry(`Attempting to play video: ${job.url}`);
-        const playButtonSelectors = job.platform === 'youtube'
-            ? ['.ytp-large-play-button', '.ytp-play-button[aria-label*="Play"]', 'button[title*="Play"]']
-            : ['.rumbles-player-play-button', 'video.rumble-player-video', 'button[data-plyr="play"]'];
-
-        if (!await ensureVideoPlaying(page, playButtonSelectors, loggerToUse)) {
-            logEntry('Video playback could not be confirmed. Checking for reappeared consent dialog...', 'warn');
-            const consentHandledAgain = await handleYouTubeConsent(page, loggerToUse);
-            if (consentHandledAgain) {
-                logEntry('Reappeared consent dialog handled. Retrying video play assurance.');
-                if (!await ensureVideoPlaying(page, playButtonSelectors, loggerToUse)) {
-                     throw new Error('Video playback failed even after re-handling consent.');
-                }
-            } else {
-                throw new Error('Video playback failed and no reappeared consent dialog found or handled.');
-            }
-        }
-        await page.evaluate(() => {
-            const v = document.querySelector('video.html5-main-video, video.rumble-player-video');
-            if(v) { v.muted=false; v.volume=0.05 + Math.random() * 0.1; console.log(`[In-Page Eval] Video unmuted, volume set to ${v.volume.toFixed(2)}`); }
-        }).catch(e => logEntry(`Unmute/volume setting failed: ${e.message}`, 'debug'));
-        const duration = await getVideoDuration(page, loggerToUse);
-        if (!duration || duration <= 0) throw new Error('Could not determine valid video duration after multiple attempts.');
-        jobResult.durationFoundSec = duration;
-        const targetWatchTimeSec = Math.floor(duration * (effectiveInput.watchTimePercentage / 100));
-        jobResult.watchTimeRequestedSec = targetWatchTimeSec;
-        logEntry(`Target watch: ${targetWatchTimeSec.toFixed(2)}s of ${duration.toFixed(2)}s.`);
-        if (targetWatchTimeSec <= 0) throw new Error(`Calculated target watch time ${targetWatchTimeSec}s is invalid.`);
-        let currentActualWatchTime = 0;
-        const watchIntervalMs = 5000;
-        const maxWatchLoops = Math.ceil(targetWatchTimeSec / (watchIntervalMs / 1000)) + 12;
-
-        for (let i = 0; i < maxWatchLoops; i++) {
-            logEntry(`Watch loop ${i+1}/${maxWatchLoops}. Ads check.`);
-            await handleAds(page, job.platform, effectiveInput, loggerToUse);
-            const videoState = await page.evaluate(() => {
-                const v = document.querySelector('video.html5-main-video, video.rumble-player-video');
-                return v ? { ct:v.currentTime, p:v.paused, e:v.ended, rs:v.readyState, ns:v.networkState, vol: v.volume, mut: v.muted } : null;
-            }).catch(e => { logEntry(`Video state error: ${e.message}`, 'warn'); return null; });
-
-            if (!videoState) {
-                logEntry('Video element not found in evaluate (watch loop), attempting to find again.', 'warn');
-                await page.waitForTimeout(1000);
-                const videoExists = await page.locator('video.html5-main-video, video.rumble-player-video').count() > 0;
-                if (!videoExists) throw new Error('Video element disappeared definitively during watch loop.');
-                continue;
-            }
-            logEntry(`State: time=${videoState.ct?.toFixed(2)}, paused=${videoState.p}, ended=${videoState.e}, ready=${videoState.rs}, net=${videoState.ns}, vol=${videoState.vol?.toFixed(2)}, muted=${videoState.mut}`);
-
-            if (videoState.p && !videoState.e) {
-                logEntry('Video is paused mid-watch, attempting to ensure it plays.');
-                if (!await ensureVideoPlaying(page, playButtonSelectors, loggerToUse)) {
-                    logEntry('Video remains paused. Checking for reappeared consent dialog (mid-watch)...', 'warn');
-                    const consentReappeared = await handleYouTubeConsent(page, loggerToUse);
-                    if (consentReappeared) {
-                         logEntry('Reappeared consent handled during watch loop. Retrying play assurance.');
-                         if(!await ensureVideoPlaying(page, playButtonSelectors, loggerToUse)) {
-                            logEntry('Still could not resume video after re-handling consent. Breaking watch loop.', 'error'); break;
-                         }
-                    } else {
-                        logEntry('Video remains paused, no consent dialog issue. Breaking watch loop.', 'error'); break;
-                    }
-                }
-            }
-            currentActualWatchTime = videoState.ct || 0;
-            jobResult.watchTimeActualSec = currentActualWatchTime;
-            if (currentActualWatchTime >= targetWatchTimeSec || videoState.e) {
-                logEntry(`Target watch time reached or video ended. Actual: ${currentActualWatchTime.toFixed(2)}s`); break;
-            }
-            if (i % 6 === 0 && i > 0) {
-                 await page.mouse.move(Math.random()*500,Math.random()*300,{steps:5}).catch(()=>{});
-                 logEntry('Simulated mouse move.','debug');
-            }
-            await page.waitForTimeout(watchIntervalMs);
-        }
-        if (currentActualWatchTime < targetWatchTimeSec) logEntry(`Watched ${currentActualWatchTime.toFixed(2)}s < target ${targetWatchTimeSec.toFixed(2)}s.`, 'warn');
-        jobResult.status = 'success';
-    } catch (e) {
-        logEntry(`Error watching video ${job.url}: ${e.message}`, 'error');
-        jobResult.status = 'failure';
-        jobResult.error = e.message + (e.stack ? `\nStack: ${e.stack}` : '');
-    } finally {
-        jobResult.endTime = new Date().toISOString();
-    }
-    return jobResult;
-}
+// (Full implementations for extractVideoId, getVideoDuration, clickIfExists, handleAds, ensureVideoPlaying,
+// watchVideoOnPage, handleYouTubeConsent with updated checkForConsentIndicators, waitForVideoPlayer)
 
 async function handleYouTubeConsent(page, loggerToUse = GlobalLogger) {
     loggerToUse.info('Handling YouTube consent with comprehensive detection strategies...');
@@ -661,10 +486,125 @@ async function handleYouTubeConsent(page, loggerToUse = GlobalLogger) {
             return { found: false };
         }
     };
-    const findAndClickConsentButtons = async () => { /* ... Full implementation from previous ... */ };
-    const handleShadowDOMConsent = async () => { /* ... Full implementation from previous ... */ };
-    const forceConsentAcceptance = async () => { /* ... Full implementation from previous ... */ };
-    // (These 3 functions are complete in the previous full code block)
+    const findAndClickConsentButtons = async () => {
+        const buttonStrategies = [
+            { name: 'Direct Accept Buttons', selectors: [
+                'button[aria-label*="Accept the use of cookies"]', 'button[aria-label*="Accept all"]',
+                'button:has-text("Accept all")', 'button:has-text("Accept")',
+                '[data-testid*="accept"]', '.consent-accept', '#consent-accept' ]},
+            { name: 'Within Consent Containers', selectors: [
+                'ytd-consent-bump-v2-lightbox button', 'tp-yt-paper-dialog button',
+                '[role="dialog"] button', '.consent-bump button', '#consent-bump button' ]},
+            { name: 'Button Text Content (more generic, try last)', selectors: [
+                '*:has-text("Accept all"):visible:last-child', '*:has-text("I agree"):visible:last-child',
+                '*:has-text("Continue"):visible:last-child', '*:has-text("Agree"):visible:last-child' ]}
+        ];
+        for (const strategy of buttonStrategies) {
+            loggerToUse.debug(`Trying button strategy: ${strategy.name}`);
+            for (const selector of strategy.selectors) {
+                try {
+                    const buttons = page.locator(selector);
+                    const count = await buttons.count();
+                    if (count > 0) {
+                        loggerToUse.debug(`Found ${count} button(s) with selector: ${selector}`);
+                        for (let i=0; i<count; ++i) {
+                            const button = buttons.nth(i);
+                            if (await button.isVisible({ timeout: 1000 }).catch(() => false) &&
+                                await button.isEnabled({ timeout: 1000 }).catch(() => false)) {
+                                loggerToUse.info(`Attempting to click consent button (selector: "${selector}", index: ${i})`);
+                                const clickStrategies = [
+                                    async () => { loggerToUse.debug('Attempting normal click.'); await button.click({ timeout: 3000, position: { x: 5, y: 5 } }); },
+                                    async () => { loggerToUse.debug('Attempting force click.'); await button.click({ force: true, timeout: 3000 }); },
+                                    async () => { loggerToUse.debug('Attempting JS click.'); await button.evaluate(node => node.click()); }
+                                ];
+                                for (const clickFn of clickStrategies) {
+                                    try {
+                                        await clickFn();
+                                        loggerToUse.info(`Successfully clicked button with selector: "${selector}", index: ${i}`);
+                                        return true;
+                                    } catch (clickError) {
+                                        loggerToUse.debug(`Click failed for "${selector}" (index ${i}): ${clickError.message.split('\n')[0]}`);
+                                    }
+                                }
+                            } else {
+                                 loggerToUse.debug(`Button "${selector}" (index ${i}) not visible or enabled.`);
+                            }
+                        }
+                    }
+                } catch (e) {
+                    loggerToUse.debug(`Button selector "${selector}" evaluation failed: ${e.message.split('\n')[0]}`);
+                }
+            }
+        }
+        return false;
+    };
+    const handleShadowDOMConsent = async () => {
+        try {
+            const shadowResult = await page.evaluate(() => {
+                let clickedInfo = { success: false, elementDetails: 'None' };
+                function findInShadow(element) {
+                    if (clickedInfo.success) return;
+                    if (element.shadowRoot) {
+                        const buttons = element.shadowRoot.querySelectorAll('button, [role="button"], [jsaction*="click"]');
+                        for (const elem of buttons) {
+                            const text = (elem.textContent || elem.innerText || '').trim().toLowerCase();
+                            const label = (elem.getAttribute('aria-label') || '').toLowerCase();
+                            if (text.includes('accept') || label.includes('accept') || text.includes('agree') || label.includes('agree')) {
+                                const style = window.getComputedStyle(elem);
+                                if (style.display !== 'none' && style.visibility !== 'hidden' && style.opacity !== '0' && elem.offsetHeight > 0) {
+                                    elem.click();
+                                    clickedInfo = { success: true, elementDetails: `Tag: ${elem.tagName}, Text: ${text.substring(0,30)}, Label: ${label.substring(0,30)}` };
+                                    return;
+                                }
+                            }
+                        }
+                        if (clickedInfo.success) return;
+                        for (const child of element.shadowRoot.children) findInShadow(child);
+                    }
+                }
+                document.querySelectorAll('*').forEach(el => findInShadow(el));
+                return clickedInfo;
+            });
+            if (shadowResult.success) {
+                loggerToUse.info(`Successfully clicked consent in Shadow DOM: ${JSON.stringify(shadowResult)}`);
+                return true;
+            }
+        } catch (e) {
+            loggerToUse.debug(`Shadow DOM consent handling failed: ${e.message.split('\n')[0]}`);
+        }
+        return false;
+    };
+    const forceConsentAcceptance = async () => {
+        try {
+            const result = await page.evaluate(() => {
+                const consentCookies = [ { name: 'CONSENT', value: 'YES+.' + new Date().toISOString().split('T')[0].replace(/-/g,'') } ];
+                let cookiesSetCount = 0;
+                for (const cookie of consentCookies) {
+                    document.cookie = `${cookie.name}=${cookie.value}; path=/; domain=.youtube.com; max-age=31536000`;
+                    cookiesSetCount++;
+                }
+                let eventsDispatched = 0;
+                try {
+                    window.dispatchEvent(new Event('consent-accepted', { bubbles: true, cancelable: true })); eventsDispatched++;
+                    window.dispatchEvent(new CustomEvent('youtube-consent', { detail: { accepted: true }, bubbles: true, cancelable: true })); eventsDispatched++;
+                } catch (e) { console.debug('[In-Page Eval] Event dispatch for consent failed:', e.message); }
+
+                const overlays = document.querySelectorAll('ytd-consent-bump-v2-lightbox, [role="dialog"][aria-modal="true"], tp-yt-paper-dialog.ytd-popup-container, div[aria-live="assertive"][role="alertdialog"]');
+                let removed = 0;
+                overlays.forEach(overlay => {
+                    try { overlay.style.display = 'none'; removed++; } catch (e) { console.debug('[In-Page Eval] Failed to hide overlay:', e.message); }
+                });
+                return { cookiesSet: cookiesSetCount, eventsDispatched, overlaysRemovedOrHidden: removed };
+            });
+            if (result.overlaysRemovedOrHidden > 0 || result.cookiesSet > 0) {
+                loggerToUse.info(`Force consent strategy: Cookies Set=${result.cookiesSet}, Events Dispatched=${result.eventsDispatched}, Overlays Hidden/Removed=${result.overlaysRemovedOrHidden}`);
+                return true;
+            }
+        } catch (e) {
+            loggerToUse.debug(`Force consent acceptance (JS eval) failed: ${e.message.split('\n')[0]}`);
+        }
+        return false;
+    };
 
     for (let attempt = 1; attempt <= 5; attempt++) {
         loggerToUse.info(`Consent handling attempt ${attempt}/5`);
@@ -782,7 +722,7 @@ async function waitForVideoPlayer(page, loggerToUse) {
     }
     throw new Error('No visible video player found after all attempts and recovery actions.');
 }
-console.log('MAIN.JS: Other helper functions defined.');
+console.log('MAIN.JS: Other helper functions defined (extractVideoId, getVideoDuration, etc.).');
 
 
 async function runSingleJob(job, effectiveInput, actorProxyConfiguration, customProxyPool, logger) {
@@ -815,8 +755,8 @@ async function runSingleJob(job, effectiveInput, actorProxyConfiguration, custom
     const detectedLocale = getLocaleForCountry(effectiveInput.proxyCountry);
     logEntry(`Geo settings: Timezone='${detectedTimezone}', Locale='${detectedLocale}' (ProxyCountry: '${effectiveInput.proxyCountry || 'N/A'}')`);
 
-    const randomWidth = 1200 + Math.floor(Math.random() * 720);
-    const randomHeight = 700 + Math.floor(Math.random() * 380);
+    const randomWidth = 1200 + Math.floor(Math.random() * 720); // Between 1200 and 1920
+    const randomHeight = 700 + Math.floor(Math.random() * 380); // Between 700 and 1080
     const dynamicWindowSizeArg = `--window-size=${randomWidth},${randomHeight}`;
     const currentLaunchArgs = [...ANTI_DETECTION_ARGS_NEW, dynamicWindowSizeArg];
 
@@ -860,20 +800,19 @@ async function runSingleJob(job, effectiveInput, actorProxyConfiguration, custom
             } else { logEntry('No proxies configured. Running directly.', 'warn'); }
         }
 
-
         logEntry(`Attempting to launch browser with args: ${JSON.stringify(currentLaunchArgs.slice(0, 5))}... + ${currentLaunchArgs.length - 5} more`);
         browser = (typeof ApifyModule !== 'undefined' && ApifyModule.Actor && ApifyModule.Actor.isAtHome && ApifyModule.Actor.isAtHome() && ApifyModule.Actor.launchPlaywright)
             ? await ApifyModule.Actor.launchPlaywright(launchOptions)
             : await playwright.chromium.launch(launchOptions);
         logEntry('Browser launched.');
 
-        const existingHeaders = launchOptions.extraHTTPHeaders || {}; // Should be empty from launchOptions unless set externally
+        const existingHeaders = launchOptions.extraHTTPHeaders || {};
         context = await browser.newContext({
             bypassCSP: true, ignoreHTTPSErrors: true,
             viewport: { width: Math.min(1920, 1200 + Math.floor(Math.random() * 320)), height: Math.min(1080, 700 + Math.floor(Math.random() * 280)) },
             locale: detectedLocale, timezoneId: detectedTimezone, javaScriptEnabled: true,
             extraHTTPHeaders: {
-                ...existingHeaders, // Merge if any were predefined, though unlikely from launchOptions.args
+                ...existingHeaders,
                 'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
                 'Accept-Language': `${detectedLocale.replace('_', '-')},en;q=0.9`,
                 'Accept-Encoding': 'gzip, deflate, br',
@@ -888,7 +827,7 @@ async function runSingleJob(job, effectiveInput, actorProxyConfiguration, custom
 
         if (job.watchType === 'referer' && job.refererUrl) {
             logEntry(`Setting referer to: ${job.refererUrl}`);
-            const currentExtraHeaders = context._options.extraHTTPHeaders || {};
+            const currentExtraHeaders = context._options?.extraHTTPHeaders || {}; // Safely access _options
             await context.setExtraHTTPHeaders({ ...currentExtraHeaders, 'Referer': job.refererUrl });
         }
 
@@ -896,7 +835,7 @@ async function runSingleJob(job, effectiveInput, actorProxyConfiguration, custom
         await page.setViewportSize({ width: Math.min(1920, 1200 + Math.floor(Math.random() * 120)), height: Math.min(1080, 700 + Math.floor(Math.random() * 80)) });
 
         await setPreventiveConsentCookies(page, jobScopedLogger);
-        await page.waitForTimeout(500 + Math.random() * 1000);
+        await page.waitForTimeout(500 + Math.random() * 1000); // Wait after setting cookies
 
         if (job.watchType === 'search' && job.searchKeywords && job.searchKeywords.length > 0) {
             const keyword = job.searchKeywords[Math.floor(Math.random() * job.searchKeywords.length)];
@@ -926,20 +865,21 @@ async function runSingleJob(job, effectiveInput, actorProxyConfiguration, custom
                 await navigationPromise;
                 logEntry(`Successfully navigated from Google SERP to YouTube video page: ${page.url()}`);
             } catch (googleSearchError) {
-                logEntry(`Could not find/click YouTube link on Google SERP for video ID ${job.videoId}. Error: ${googleSearchError.message.split('\n')[0]}`, 'error');
+                logEntry(`Could not find or click YouTube link on Google SERP for video ID ${job.videoId}. Error: ${googleSearchError.message.split('\n')[0]}`, 'error');
                 logEntry('Falling back to direct navigation to video URL as search from Google failed.');
                  await page.goto(job.url, { timeout: 30000, waitUntil: 'domcontentloaded' });
             }
             await simulateHumanBehavior(page, jobScopedLogger, 'youtube-video-page-loaded-from-search');
 
-        } else {
+        } else { // Direct or standard Referer navigation
             logEntry(`Navigating (direct/referer) to ${job.url}.`);
             await page.goto(job.url, { timeout: effectiveInput.timeout * 1000, waitUntil: 'domcontentloaded' });
             logEntry(`Initial navigation to ${job.url} (domcontentloaded) complete.`);
-            await page.waitForTimeout(1500 + Math.random() * 2000);
+            await page.waitForTimeout(1500 + Math.random() * 2000); // Realistic load delay
             await simulateHumanBehavior(page, jobScopedLogger, 'youtube-video-page-loaded-direct');
         }
 
+        // Consent handling on the (now hopefully loaded) video page
         await debugPageState(page, jobScopedLogger, 'before consent (video page)');
         logEntry('Handling consent on video page...');
         const videoPageConsentHandled = await handleYouTubeConsent(page, jobScopedLogger);
@@ -969,7 +909,7 @@ async function runSingleJob(job, effectiveInput, actorProxyConfiguration, custom
                 } catch (e) { console.debug('[In-Page Eval] Error processing selector:', selector, e); }
             });
             if (removedCount > 0) console.log(`[In-Page Eval] Aggressively removed ${removedCount} potential overlays.`);
-        }).catch(e => jobScopedLogger.warning(`Error during aggressive overlay removal: ${e.message}`)); // Use jobScopedLogger
+        }).catch(e => jobScopedLogger.warning(`Error during aggressive overlay removal: ${e.message}`));
         await page.waitForTimeout(1000);
 
         const visiblePlayerSelector = await waitForVideoPlayer(page, jobScopedLogger);
@@ -1035,40 +975,129 @@ async function actorMainLogic() {
         GlobalLogger.info('Actor input received.');
         GlobalLogger.debug('Raw input object:', input);
 
-        const defaultInput = { /* ... Full defaultInput object ... */ }; // Maintained
+        const defaultInput = {
+            videoUrls: ['https://www.youtube.com/watch?v=dQw4w9WgXcQ'],
+            watchTypes: ['direct'], refererUrls: [''], searchKeywordsForEachVideo: ['default keyword, another default'],
+            watchTimePercentage: 80, useProxies: true, proxyUrls: [], proxyCountry: null, proxyGroups: ['RESIDENTIAL'],
+            headless: true, concurrency: 1, concurrencyInterval: 5, timeout: 120, maxSecondsAds: 15,
+            skipAdsAfter: ["5", "10"], autoSkipAds: true, stopSpawningOnOverload: true,
+            useAV1: false, disableProxyTests: false, enableEngagement: false, leaveComment: false, performLike: false, subscribeToChannel: false
+        };
         const rawInput = input || {};
         const effectiveInput = { ...defaultInput };
-        // Input processing logic (Maintained)
-        // ...
-
+        for (const key of Object.keys(defaultInput)) {
+            if (rawInput.hasOwnProperty(key) && rawInput[key] !== undefined && rawInput[key] !== null) {
+                if (Array.isArray(defaultInput[key])) {
+                    if (Array.isArray(rawInput[key]) && rawInput[key].length > 0) { effectiveInput[key] = rawInput[key]; }
+                    else if (Array.isArray(rawInput[key]) && rawInput[key].length === 0 &&
+                               (key === 'proxyUrls' || key === 'watchTypes' || key === 'refererUrls' || key === 'searchKeywordsForEachVideo')) {
+                        effectiveInput[key] = [];
+                    }
+                } else { effectiveInput[key] = rawInput[key]; }
+            }
+        }
+        let tempSkipAds = effectiveInput.skipAdsAfter;
+        if (Array.isArray(tempSkipAds) && tempSkipAds.every(s => typeof s === 'string' || typeof s === 'number')) {
+            effectiveInput.skipAdsAfter = tempSkipAds.map(s => parseInt(String(s), 10)).filter(n => !isNaN(n));
+            if (effectiveInput.skipAdsAfter.length === 0 && defaultInput.skipAdsAfter.length > 0) {
+                GlobalLogger.warning(`'skipAdsAfter' (${JSON.stringify(tempSkipAds)}) parsed to empty. Using default: ${JSON.stringify(defaultInput.skipAdsAfter)}`);
+                effectiveInput.skipAdsAfter = defaultInput.skipAdsAfter.map(s => parseInt(s,10));
+            }
+        } else {
+            GlobalLogger.warning(`'skipAdsAfter' not a valid array. Using default. Received: ${JSON.stringify(tempSkipAds)}`);
+            effectiveInput.skipAdsAfter = defaultInput.skipAdsAfter.map(s => parseInt(s,10));
+        }
+        if (effectiveInput.proxyCountry && typeof effectiveInput.proxyCountry === 'string') {
+            effectiveInput.proxyCountry = effectiveInput.proxyCountry.toUpperCase();
+        }
         GlobalLogger.info('Effective input settings:', effectiveInput);
+
         if (!effectiveInput.videoUrls || !Array.isArray(effectiveInput.videoUrls) || effectiveInput.videoUrls.length === 0) {
             GlobalLogger.error('No videoUrls provided. Exiting.');
             if (ApifyModule.Actor.fail) await ApifyModule.Actor.fail('Missing videoUrls in input.'); return;
         }
 
         let actorProxyConfiguration = null;
-        // Proxy configuration logic (Maintained)
-        // ...
+        if (effectiveInput.useProxies && (!effectiveInput.proxyUrls || effectiveInput.proxyUrls.length === 0)) {
+            const opts = { groups: effectiveInput.proxyGroups };
+            if (effectiveInput.proxyCountry && effectiveInput.proxyCountry.trim() !== "" && effectiveInput.proxyCountry.toUpperCase() !== "ANY") {
+                opts.countryCode = effectiveInput.proxyCountry;
+            }
+            actorProxyConfiguration = await ApifyModule.Actor.createProxyConfiguration(opts);
+            GlobalLogger.info(`Apify Proxy Config created. Country: ${opts.countryCode || 'Any (group default)'}, Groups: ${effectiveInput.proxyGroups.join(', ')}`);
+        } else if (effectiveInput.useProxies && effectiveInput.proxyUrls && effectiveInput.proxyUrls.length > 0) {
+            GlobalLogger.info(`Using ${effectiveInput.proxyUrls.length} custom proxies.`);
+        }
 
         const jobs = [];
-        // Job creation logic (Maintained)
-        // ...
+        for (let i = 0; i < effectiveInput.videoUrls.length; i++) {
+            const url = effectiveInput.videoUrls[i];
+            if (!url || typeof url !== 'string' || (!url.includes('youtube.com') && !url.includes('youtu.be') && !url.includes('rumble.com'))) {
+                GlobalLogger.warning(`Invalid or unsupported URL at index ${i}: "${url}". Skipping.`); continue;
+            }
+            const videoId = extractVideoId(url);
+            if (!videoId) { GlobalLogger.warning(`Could not extract video ID from URL: "${url}". Skipping.`); continue; }
+            const platform = url.includes('youtube.com')||url.includes('youtu.be') ? 'youtube' : (url.includes('rumble.com') ? 'rumble' : 'unknown');
+            if (platform === 'unknown') { GlobalLogger.warning(`Unknown platform for URL: "${url}". Skipping.`); continue; }
+            const watchType = (Array.isArray(effectiveInput.watchTypes) && effectiveInput.watchTypes[i])
+                ? effectiveInput.watchTypes[i]
+                : (effectiveInput.watchTypes && typeof effectiveInput.watchTypes === 'string' ? effectiveInput.watchTypes : defaultInput.watchTypes[0]) || 'direct';
+            const refererUrl = (watchType === 'referer' && Array.isArray(effectiveInput.refererUrls) && effectiveInput.refererUrls[i])
+                ? effectiveInput.refererUrls[i]
+                : null;
+            let searchKeywords = [];
+            if (watchType === 'search' && Array.isArray(effectiveInput.searchKeywordsForEachVideo) && typeof effectiveInput.searchKeywordsForEachVideo[i] === 'string') {
+                searchKeywords = effectiveInput.searchKeywordsForEachVideo[i].split(',').map(kw => kw.trim()).filter(kw => kw.length > 0);
+            }
+            if (watchType === 'search' && searchKeywords.length === 0) {
+                GlobalLogger.warning(`Watch type 'search' for ${url} but no keywords. Defaulting to 'direct'.`);
+                jobs.push({ id: uuidv4(), url, videoId, platform, watchType: 'direct', refererUrl: null, searchKeywords: [] });
+            } else if (watchType === 'referer' && !refererUrl) {
+                GlobalLogger.warning(`Watch type 'referer' for ${url} but no refererUrl provided. Defaulting to 'direct'.`);
+                jobs.push({ id: uuidv4(), url, videoId, platform, watchType: 'direct', refererUrl: null, searchKeywords: [] });
+            } else { jobs.push({ id: uuidv4(), url, videoId, platform, watchType, refererUrl, searchKeywords }); }
+        }
 
-        if (jobs.length === 0) { /* ... Exit if no jobs ... */ } // Maintained
+        if (jobs.length === 0) {
+            GlobalLogger.error('No valid jobs after processing input. Exiting.');
+            if (ApifyModule.Actor.fail) await ApifyModule.Actor.fail('No valid video URLs to process.'); return;
+        }
         GlobalLogger.info(`Created ${jobs.length} valid jobs to process.`);
 
-        const overallResults = { /* ... Initialize results ... */ }; // Maintained
+        const overallResults = { totalJobs: jobs.length, successfulJobs: 0, failedJobs: 0, details: [], startTime: new Date().toISOString(), endTime: null };
         const activeWorkers = new Set();
-        // Job processing loop (Maintained)
-        // ...
         for (let i = 0; i < jobs.length; i++) {
             const job = jobs[i];
-            // Concurrency and overload checks...
+            if (effectiveInput.stopSpawningOnOverload && typeof ApifyModule.Actor.isAtCapacity === 'function' && await ApifyModule.Actor.isAtCapacity()) {
+                GlobalLogger.warning('At capacity, pausing 30s.'); await new Promise(r => setTimeout(r, 30000));
+                if (await ApifyModule.Actor.isAtCapacity()) { GlobalLogger.error('Still at capacity. Stopping.'); break; }
+            }
+            while (activeWorkers.size >= effectiveInput.concurrency) {
+                GlobalLogger.debug(`Concurrency limit (${effectiveInput.concurrency}) reached. Waiting... Active: ${activeWorkers.size}`);
+                await Promise.race(Array.from(activeWorkers));
+            }
             const jobPromise = runSingleJob(job, effectiveInput, actorProxyConfiguration, effectiveInput.proxyUrls, GlobalLogger)
-                .then(/* ... */).catch(/* ... */).finally(/* ... */); // Maintained
+                .then(async (result) => {
+                    overallResults.details.push(result);
+                    result.status === 'success' ? overallResults.successfulJobs++ : overallResults.failedJobs++;
+                    if (ApifyModule.Actor.pushData) await ApifyModule.Actor.pushData(result);
+                })
+                .catch(async (error) => {
+                    GlobalLogger.error(`Unhandled job promise error for ${job.id}: ${error.message}`, { stack: error.stack });
+                    const errRes = { jobId: job.id, url: job.url, platform: job.platform, videoId: job.videoId, status: 'catastrophic_loop_failure', error: error.message, stack: error.stack, log: [`[${new Date().toISOString()}] [ERROR] Unhandled promise: ${error.message}`]};
+                    overallResults.details.push(errRes); overallResults.failedJobs++;
+                    if (ApifyModule.Actor.pushData) await ApifyModule.Actor.pushData(errRes);
+                })
+                .finally(() => {
+                    activeWorkers.delete(jobPromise);
+                    GlobalLogger.info(`Worker slot freed. Active: ${activeWorkers.size}. Job ID ${job.id.substring(0,6)} done.`);
+                });
             activeWorkers.add(jobPromise);
-            // Logging and interval...
+            GlobalLogger.info(`Job ${job.id.substring(0,6)} (${i + 1}/${jobs.length}) dispatched. WatchType: ${job.watchType}. Active: ${activeWorkers.size}`);
+            if (effectiveInput.concurrencyInterval > 0 && i < jobs.length - 1 && activeWorkers.size < effectiveInput.concurrency) {
+                GlobalLogger.debug(`Concurrency interval: ${effectiveInput.concurrencyInterval}s`);
+                await new Promise(r => setTimeout(r, effectiveInput.concurrencyInterval * 1000));
+            }
         }
 
         GlobalLogger.info(`All jobs dispatched. Waiting for ${activeWorkers.size} to complete...`);
@@ -1082,16 +1111,16 @@ async function actorMainLogic() {
 
     } catch (e) {
         console.error("ACTOR_MAIN_LOGIC: CRITICAL ERROR IN TOP LEVEL:", e.message, e.stack);
-        if (GlobalLogger && GlobalLogger.error) { // Try to use GlobalLogger if it was initialized
+        if (GlobalLogger && GlobalLogger.error) {
             GlobalLogger.error("ACTOR_MAIN_LOGIC: CRITICAL ERROR IN TOP LEVEL:", { message: e.message, stack: e.stack });
         }
         if (ApifyModule.Actor.fail) await ApifyModule.Actor.fail(e.message);
         else process.exit(1);
     }
 }
+console.log('MAIN.JS: actorMainLogic function fully defined.');
 
 
-console.log('MAIN.JS: Before Apify.Actor.main call.');
 if (ApifyModule.Actor && typeof ApifyModule.Actor.main === 'function') {
     console.log('MAIN.JS: Apify.Actor.main is available, calling it.');
     ApifyModule.Actor.main(actorMainLogic);

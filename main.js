@@ -8,7 +8,7 @@ const { v4: uuidv4 } = require('uuid');
 
 console.log('MAIN.JS: Basic modules imported.');
 
-// --- NEW BROWSER LAUNCH ARGUMENTS ---
+// --- COMPREHENSIVE BROWSER LAUNCH ARGUMENTS ---
 const ANTI_DETECTION_ARGS_NEW = [
     '--no-sandbox',
     '--disable-setuid-sandbox',
@@ -37,19 +37,19 @@ const ANTI_DETECTION_ARGS_NEW = [
     '--disable-component-extensions-with-background-pages',
     '--disable-hang-monitor',
     '--disable-prompt-on-repost',
-    // '--disable-web-security', // Keep commented unless absolutely needed
+    // '--disable-web-security', // Keep commented unless strictly necessary for a specific site
     // '--allow-running-insecure-content',
     '--use-fake-ui-for-media-stream',
     '--use-fake-device-for-media-stream',
     '--password-store=basic',
     '--use-mock-keychain',
-    // '--enable-precise-memory-info', // Commenting out, could be a fingerprint
+    // '--enable-precise-memory-info', // Commented out, could be a fingerprinting vector
     '--force-webrtc-ip-handling-policy=default_public_interface_only',
     '--disable-site-isolation-trials',
 ];
 console.log('MAIN.JS: ANTI_DETECTION_ARGS_NEW defined.');
 
-let GlobalLogger;
+let GlobalLogger; // Defined globally
 
 // --- GEO HELPER FUNCTIONS ---
 function getTimezoneForProxy(proxyCountry, useProxiesSetting) {
@@ -125,13 +125,12 @@ function getYouTubeSearchUrl(keyword, countryCode, detectedLocale) {
 }
 console.log('MAIN.JS: Geo helper functions defined.');
 
-// --- NEW HELPER FUNCTIONS (from latest suggestions) ---
 async function setPreventiveConsentCookies(page, loggerToUse) {
     try {
         await page.context().addCookies([
-            { name: 'CONSENT', value: 'PENDING+987', domain: '.youtube.com', path: '/' },
-            { name: 'SOCS', value: 'CAESEwgDEgk0ODE3Nzk3MjQaAmVuIAEaBgiA_LmvBg', domain: '.youtube.com', path: '/', secure: true, sameSite: 'None'},
-            { name: '__Secure-YT-GDPR', value: '1', domain: '.youtube.com', path: '/', secure: true, sameSite: 'Lax' }
+            { name: 'CONSENT', value: 'PENDING+987', domain: '.youtube.com', path: '/' }, // General consent
+            { name: 'SOCS', value: 'CAESEwgDEgk0ODE3Nzk3MjQaAmVuIAEaBgiA_LmvBg', domain: '.youtube.com', path: '/', secure: true, sameSite: 'None'}, // Observed consent-related
+            { name: '__Secure-YT-GDPR', value: '1', domain: '.youtube.com', path: '/', secure: true, sameSite: 'Lax' } // GDPR specific
         ]);
         loggerToUse.info('Set preventive consent cookies (CONSENT=PENDING+987, SOCS, __Secure-YT-GDPR=1).');
     } catch (e) {
@@ -243,7 +242,7 @@ async function applyAntiDetectionScripts(pageOrContext, detectedTimezoneId) {
         // Webdriver Traces
         try {
             Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
-            delete navigator.__proto__.webdriver;
+            if (navigator.__proto__ && typeof navigator.__proto__ === 'object') delete navigator.__proto__.webdriver;
         } catch (e) { console.debug('[Anti-Detect] Failed basic webdriver spoof:', e.message); }
         try { if (navigator.webdriver) delete navigator.webdriver; } catch (e) { console.debug('[Anti-Detect] Failed direct delete navigator.webdriver:', e.message); }
 
@@ -251,7 +250,7 @@ async function applyAntiDetectionScripts(pageOrContext, detectedTimezoneId) {
         try {
             if (typeof window.chrome !== 'object') window.chrome = {};
             window.chrome.runtime = window.chrome.runtime || {};
-            const props = [' สิงห์ ', 'csi', 'loadTimes', 'app'];
+            const props = [' สิงห์ ', 'csi', 'loadTimes', 'app']; // Common properties checked
             for (const prop of props) if(typeof window.chrome[prop] === 'undefined') window.chrome[prop] = () => {};
         } catch (e) { console.debug('[Anti-Detect] Failed Chrome object spoof:', e.message); }
 
@@ -262,23 +261,25 @@ async function applyAntiDetectionScripts(pageOrContext, detectedTimezoneId) {
                 { name: 'Chrome PDF Viewer', filename: 'mhjfbmdgcfjbbpaeojofohoefgiehjai', description: '', mimeTypes: [{ type: 'application/pdf', suffixes: 'pdf', description: '' }] },
                 { name: 'Native Client', filename: 'internal-nacl-plugin', description: 'Native Client', mimeTypes: [{ type: 'application/x-nacl', suffixes: '', description: 'Native Client Executable' },{ type: 'application/x-pnacl', suffixes: '', description: 'Portable Native Client Executable' }] }
             ];
-            const mimeTypesList = [];
-            const pluginsList = pluginsData.map(p => {
-                const mimeTypesForPlugin = p.mimeTypes.map(mt => {
-                    const mimeType = { ...mt, enabledPlugin: null };
-                    Object.setPrototypeOf(mimeType, MimeType.prototype);
-                    mimeTypesList.push(mimeType);
-                    return mimeType;
+            if (typeof Plugin === 'function' && typeof PluginArray === 'function' && typeof MimeType === 'function' && typeof MimeTypeArray === 'function') {
+                const mimeTypesList = [];
+                const pluginsList = pluginsData.map(p => {
+                    const mimeTypesForPlugin = p.mimeTypes.map(mt => {
+                        const mimeType = { ...mt, enabledPlugin: null };
+                        Object.setPrototypeOf(mimeType, MimeType.prototype);
+                        mimeTypesList.push(mimeType);
+                        return mimeType;
+                    });
+                    const plugin = { ...p, mimeTypes: mimeTypesForPlugin, length: mimeTypesForPlugin.length, item: i => mimeTypesForPlugin[i], namedItem: name => mimeTypesForPlugin.find(m => m.type === name) };
+                    Object.setPrototypeOf(plugin, Plugin.prototype);
+                    mimeTypesForPlugin.forEach(mt => mt.enabledPlugin = plugin);
+                    return plugin;
                 });
-                const plugin = { ...p, mimeTypes: mimeTypesForPlugin, length: mimeTypesForPlugin.length, item: i => mimeTypesForPlugin[i], namedItem: name => mimeTypesForPlugin.find(m => m.type === name) };
-                Object.setPrototypeOf(plugin, Plugin.prototype);
-                mimeTypesForPlugin.forEach(mt => mt.enabledPlugin = plugin);
-                return plugin;
-            });
-            Object.setPrototypeOf(pluginsList, PluginArray.prototype);
-            Object.setPrototypeOf(mimeTypesList, MimeTypeArray.prototype);
-            Object.defineProperty(navigator, 'plugins', { get: () => pluginsList, configurable: true, enumerable: true });
-            Object.defineProperty(navigator, 'mimeTypes', { get: () => mimeTypesList, configurable: true, enumerable: true });
+                Object.setPrototypeOf(pluginsList, PluginArray.prototype);
+                Object.setPrototypeOf(mimeTypesList, MimeTypeArray.prototype);
+                Object.defineProperty(navigator, 'plugins', { get: () => pluginsList, configurable: true, enumerable: true });
+                Object.defineProperty(navigator, 'mimeTypes', { get: () => mimeTypesList, configurable: true, enumerable: true });
+            } else { console.debug('[Anti-Detect] Plugin/MimeType prototypes not available.');}
         } catch (e) { console.debug('[Anti-Detect] Failed plugin/mimeType spoof:', e.message); }
 
         // Languages Spoofing
@@ -323,7 +324,7 @@ async function applyAntiDetectionScripts(pageOrContext, detectedTimezoneId) {
             const webGLSpoof = { 37445: 'Intel Inc.', 37446: 'Intel Iris OpenGL Engine', 7937: 'WebGL 1.0', 7936: 'Google Inc.', 35724: 'WebGL GLSL ES 1.0' };
             const originalGetParameter = WebGLRenderingContext.prototype.getParameter;
             WebGLRenderingContext.prototype.getParameter = function(p) { return webGLSpoof.hasOwnProperty(p) ? webGLSpoof[p] : originalGetParameter.call(this, p); };
-            if (typeof WebGL2RenderingContext !== 'undefined') {
+            if (typeof WebGL2RenderingContext !== 'undefined' && WebGL2RenderingContext.prototype) { // Added prototype check
                 const originalGetParameter2 = WebGL2RenderingContext.prototype.getParameter;
                 WebGL2RenderingContext.prototype.getParameter = function(p) { return webGLSpoof.hasOwnProperty(p) ? webGLSpoof[p] : originalGetParameter2.call(this, p); };
             }
@@ -332,29 +333,31 @@ async function applyAntiDetectionScripts(pageOrContext, detectedTimezoneId) {
         // AudioContext Fingerprinting
         try {
             const acOriginal = window.AudioContext || window.webkitAudioContext;
-            if (acOriginal) {
+            if (acOriginal && acOriginal.prototype) { // Added prototype check
                 const originalCreateOscillator = acOriginal.prototype.createOscillator;
-                acOriginal.prototype.createOscillator = function () {
-                    const oscillator = originalCreateOscillator.apply(this, arguments);
-                    const originalStart = oscillator.start;
-                    oscillator.start = function () { this.frequency.setValueAtTime(this.frequency.value + (Math.random()-0.5)*0.1, this.context.currentTime); return originalStart.apply(this, arguments); };
-                    return oscillator;
-                };
+                if (originalCreateOscillator) { // Check if method exists
+                    acOriginal.prototype.createOscillator = function () {
+                        const oscillator = originalCreateOscillator.apply(this, arguments);
+                        const originalStart = oscillator.start;
+                        oscillator.start = function () { this.frequency.setValueAtTime(this.frequency.value + (Math.random()-0.5)*0.1, this.context.currentTime); return originalStart.apply(this, arguments); };
+                        return oscillator;
+                    };
+                }
             }
         } catch (e) { console.debug('[Anti-Detect] Failed AudioContext spoof:', e.message); }
 
         // Window Dimensions
         try {
-            Object.defineProperty(window, 'outerHeight', { get: () => window.innerHeight + (Math.floor(Math.random() * 20) + 75), configurable: true }); // Adjusted offset
+            Object.defineProperty(window, 'outerHeight', { get: () => window.innerHeight + (Math.floor(Math.random() * 20) + 75), configurable: true });
             Object.defineProperty(window, 'outerWidth', { get: () => window.innerWidth + (Math.floor(Math.random() * 3)), configurable: true });
         } catch (e) { console.debug('[Anti-Detect] Failed outerHeight/Width spoof:', e.message); }
 
         // Timezone and Intl
         try {
-            const getOffset = (tz) => { try { const d=new Date(),u=new Date(d.getTime()+(d.getTimezoneOffset()*60000)),t=new Date(u.toLocaleString("en-US",{timeZone:tz})); return Math.round((u.getTime()-t.getTime())/60000); } catch(e){return 0;} };
+            const getOffset = (tz) => { try { const d=new Date(),u=new Date(d.getTime()+(d.getTimezoneOffset()*60000)),t=new Date(u.toLocaleString("en-US",{timeZone:tz})); return Math.round((u.getTime()-t.getTime())/60000); } catch(e){ console.debug('getOffset error', e); return 0;} };
             const targetOffset = getOffset(timezoneId);
             Date.prototype.getTimezoneOffset = function() { return targetOffset; };
-            if (typeof Intl !== 'undefined' && Intl.DateTimeFormat) {
+            if (typeof Intl !== 'undefined' && Intl.DateTimeFormat && Intl.DateTimeFormat.prototype) { // Added prototype check
                 const originalResolvedOptions = Intl.DateTimeFormat.prototype.resolvedOptions;
                 Intl.DateTimeFormat.prototype.resolvedOptions = function() { const o=originalResolvedOptions.call(this); o.timeZone=timezoneId; return o; };
             }
@@ -365,9 +368,11 @@ async function applyAntiDetectionScripts(pageOrContext, detectedTimezoneId) {
 
         // Screen Properties
         try {
-            const h = screen.height, w = screen.width;
-            Object.defineProperty(screen, 'availHeight', { get: () => h - (Math.floor(Math.random()*20)+40), configurable: true });
-            Object.defineProperty(screen, 'availWidth', { get: () => w, configurable: true });
+            if (window.screen) {
+                const h = screen.height, w = screen.width;
+                Object.defineProperty(screen, 'availHeight', { get: () => h - (Math.floor(Math.random()*20)+40), configurable: true });
+                Object.defineProperty(screen, 'availWidth', { get: () => w, configurable: true });
+            }
         } catch (e) { console.debug('[Anti-Detect] Failed screen avail spoof:', e.message); }
 
         // Device Memory and Hardware Concurrency
@@ -722,7 +727,7 @@ async function waitForVideoPlayer(page, loggerToUse) {
     }
     throw new Error('No visible video player found after all attempts and recovery actions.');
 }
-console.log('MAIN.JS: Other helper functions defined (extractVideoId, getVideoDuration, etc.).');
+console.log('MAIN.JS: Other helper functions defined.');
 
 
 async function runSingleJob(job, effectiveInput, actorProxyConfiguration, customProxyPool, logger) {
@@ -755,8 +760,8 @@ async function runSingleJob(job, effectiveInput, actorProxyConfiguration, custom
     const detectedLocale = getLocaleForCountry(effectiveInput.proxyCountry);
     logEntry(`Geo settings: Timezone='${detectedTimezone}', Locale='${detectedLocale}' (ProxyCountry: '${effectiveInput.proxyCountry || 'N/A'}')`);
 
-    const randomWidth = 1200 + Math.floor(Math.random() * 720); // Between 1200 and 1920
-    const randomHeight = 700 + Math.floor(Math.random() * 380); // Between 700 and 1080
+    const randomWidth = 1200 + Math.floor(Math.random() * 720);
+    const randomHeight = 700 + Math.floor(Math.random() * 380);
     const dynamicWindowSizeArg = `--window-size=${randomWidth},${randomHeight}`;
     const currentLaunchArgs = [...ANTI_DETECTION_ARGS_NEW, dynamicWindowSizeArg];
 
@@ -827,7 +832,7 @@ async function runSingleJob(job, effectiveInput, actorProxyConfiguration, custom
 
         if (job.watchType === 'referer' && job.refererUrl) {
             logEntry(`Setting referer to: ${job.refererUrl}`);
-            const currentExtraHeaders = context._options?.extraHTTPHeaders || {}; // Safely access _options
+            const currentExtraHeaders = context._options?.extraHTTPHeaders || {};
             await context.setExtraHTTPHeaders({ ...currentExtraHeaders, 'Referer': job.refererUrl });
         }
 
@@ -835,7 +840,7 @@ async function runSingleJob(job, effectiveInput, actorProxyConfiguration, custom
         await page.setViewportSize({ width: Math.min(1920, 1200 + Math.floor(Math.random() * 120)), height: Math.min(1080, 700 + Math.floor(Math.random() * 80)) });
 
         await setPreventiveConsentCookies(page, jobScopedLogger);
-        await page.waitForTimeout(500 + Math.random() * 1000); // Wait after setting cookies
+        await page.waitForTimeout(500 + Math.random() * 1000);
 
         if (job.watchType === 'search' && job.searchKeywords && job.searchKeywords.length > 0) {
             const keyword = job.searchKeywords[Math.floor(Math.random() * job.searchKeywords.length)];
@@ -871,15 +876,14 @@ async function runSingleJob(job, effectiveInput, actorProxyConfiguration, custom
             }
             await simulateHumanBehavior(page, jobScopedLogger, 'youtube-video-page-loaded-from-search');
 
-        } else { // Direct or standard Referer navigation
+        } else {
             logEntry(`Navigating (direct/referer) to ${job.url}.`);
             await page.goto(job.url, { timeout: effectiveInput.timeout * 1000, waitUntil: 'domcontentloaded' });
             logEntry(`Initial navigation to ${job.url} (domcontentloaded) complete.`);
-            await page.waitForTimeout(1500 + Math.random() * 2000); // Realistic load delay
+            await page.waitForTimeout(1500 + Math.random() * 2000);
             await simulateHumanBehavior(page, jobScopedLogger, 'youtube-video-page-loaded-direct');
         }
 
-        // Consent handling on the (now hopefully loaded) video page
         await debugPageState(page, jobScopedLogger, 'before consent (video page)');
         logEntry('Handling consent on video page...');
         const videoPageConsentHandled = await handleYouTubeConsent(page, jobScopedLogger);
@@ -1035,7 +1039,7 @@ async function actorMainLogic() {
             if (!url || typeof url !== 'string' || (!url.includes('youtube.com') && !url.includes('youtu.be') && !url.includes('rumble.com'))) {
                 GlobalLogger.warning(`Invalid or unsupported URL at index ${i}: "${url}". Skipping.`); continue;
             }
-            const videoId = extractVideoId(url);
+            const videoId = extractVideoId(url); // This was the failing line
             if (!videoId) { GlobalLogger.warning(`Could not extract video ID from URL: "${url}". Skipping.`); continue; }
             const platform = url.includes('youtube.com')||url.includes('youtu.be') ? 'youtube' : (url.includes('rumble.com') ? 'rumble' : 'unknown');
             if (platform === 'unknown') { GlobalLogger.warning(`Unknown platform for URL: "${url}". Skipping.`); continue; }

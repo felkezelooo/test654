@@ -49,7 +49,7 @@ const ANTI_DETECTION_ARGS_NEW = [
 ];
 console.log('MAIN.JS: ANTI_DETECTION_ARGS_NEW defined.');
 
-let GlobalLogger; // Defined globally
+let GlobalLogger;
 
 // --- GEO HELPER FUNCTIONS ---
 function getTimezoneForProxy(proxyCountry, useProxiesSetting) {
@@ -128,9 +128,9 @@ console.log('MAIN.JS: Geo helper functions defined.');
 async function setPreventiveConsentCookies(page, loggerToUse) {
     try {
         await page.context().addCookies([
-            { name: 'CONSENT', value: 'PENDING+987', domain: '.youtube.com', path: '/' }, // General consent
-            { name: 'SOCS', value: 'CAESEwgDEgk0ODE3Nzk3MjQaAmVuIAEaBgiA_LmvBg', domain: '.youtube.com', path: '/', secure: true, sameSite: 'None'}, // Observed consent-related
-            { name: '__Secure-YT-GDPR', value: '1', domain: '.youtube.com', path: '/', secure: true, sameSite: 'Lax' } // GDPR specific
+            { name: 'CONSENT', value: 'PENDING+987', domain: '.youtube.com', path: '/' },
+            { name: 'SOCS', value: 'CAESEwgDEgk0ODE3Nzk3MjQaAmVuIAEaBgiA_LmvBg', domain: '.youtube.com', path: '/', secure: true, sameSite: 'None'},
+            { name: '__Secure-YT-GDPR', value: '1', domain: '.youtube.com', path: '/', secure: true, sameSite: 'Lax' }
         ]);
         loggerToUse.info('Set preventive consent cookies (CONSENT=PENDING+987, SOCS, __Secure-YT-GDPR=1).');
     } catch (e) {
@@ -236,7 +236,6 @@ async function debugClickElement(page, selector, loggerToUse) {
     }
 }
 
-// --- NEW COMPREHENSIVE ANTI-DETECTION SCRIPT ---
 async function applyAntiDetectionScripts(pageOrContext, detectedTimezoneId) {
     const comprehensiveAntiDetectionScript = (timezoneId) => {
         // Webdriver Traces
@@ -250,7 +249,7 @@ async function applyAntiDetectionScripts(pageOrContext, detectedTimezoneId) {
         try {
             if (typeof window.chrome !== 'object') window.chrome = {};
             window.chrome.runtime = window.chrome.runtime || {};
-            const props = [' สิงห์ ', 'csi', 'loadTimes', 'app']; // Common properties checked
+            const props = [' สิงห์ ', 'csi', 'loadTimes', 'app'];
             for (const prop of props) if(typeof window.chrome[prop] === 'undefined') window.chrome[prop] = () => {};
         } catch (e) { console.debug('[Anti-Detect] Failed Chrome object spoof:', e.message); }
 
@@ -324,7 +323,7 @@ async function applyAntiDetectionScripts(pageOrContext, detectedTimezoneId) {
             const webGLSpoof = { 37445: 'Intel Inc.', 37446: 'Intel Iris OpenGL Engine', 7937: 'WebGL 1.0', 7936: 'Google Inc.', 35724: 'WebGL GLSL ES 1.0' };
             const originalGetParameter = WebGLRenderingContext.prototype.getParameter;
             WebGLRenderingContext.prototype.getParameter = function(p) { return webGLSpoof.hasOwnProperty(p) ? webGLSpoof[p] : originalGetParameter.call(this, p); };
-            if (typeof WebGL2RenderingContext !== 'undefined' && WebGL2RenderingContext.prototype) { // Added prototype check
+            if (typeof WebGL2RenderingContext !== 'undefined' && WebGL2RenderingContext.prototype) {
                 const originalGetParameter2 = WebGL2RenderingContext.prototype.getParameter;
                 WebGL2RenderingContext.prototype.getParameter = function(p) { return webGLSpoof.hasOwnProperty(p) ? webGLSpoof[p] : originalGetParameter2.call(this, p); };
             }
@@ -333,9 +332,9 @@ async function applyAntiDetectionScripts(pageOrContext, detectedTimezoneId) {
         // AudioContext Fingerprinting
         try {
             const acOriginal = window.AudioContext || window.webkitAudioContext;
-            if (acOriginal && acOriginal.prototype) { // Added prototype check
+            if (acOriginal && acOriginal.prototype) {
                 const originalCreateOscillator = acOriginal.prototype.createOscillator;
-                if (originalCreateOscillator) { // Check if method exists
+                if (originalCreateOscillator) {
                     acOriginal.prototype.createOscillator = function () {
                         const oscillator = originalCreateOscillator.apply(this, arguments);
                         const originalStart = oscillator.start;
@@ -354,10 +353,10 @@ async function applyAntiDetectionScripts(pageOrContext, detectedTimezoneId) {
 
         // Timezone and Intl
         try {
-            const getOffset = (tz) => { try { const d=new Date(),u=new Date(d.getTime()+(d.getTimezoneOffset()*60000)),t=new Date(u.toLocaleString("en-US",{timeZone:tz})); return Math.round((u.getTime()-t.getTime())/60000); } catch(e){ console.debug('getOffset error', e); return 0;} };
+            const getOffset = (tz) => { try { const d=new Date(),u=new Date(d.getTime()+(d.getTimezoneOffset()*60000)),t=new Date(u.toLocaleString("en-US",{timeZone:tz})); return Math.round((u.getTime()-t.getTime())/60000); } catch(e){ console.debug('[Anti-Detect] getOffset error for tz:', tz, e.message); return 0;} };
             const targetOffset = getOffset(timezoneId);
             Date.prototype.getTimezoneOffset = function() { return targetOffset; };
-            if (typeof Intl !== 'undefined' && Intl.DateTimeFormat && Intl.DateTimeFormat.prototype) { // Added prototype check
+            if (typeof Intl !== 'undefined' && Intl.DateTimeFormat && Intl.DateTimeFormat.prototype) {
                 const originalResolvedOptions = Intl.DateTimeFormat.prototype.resolvedOptions;
                 Intl.DateTimeFormat.prototype.resolvedOptions = function() { const o=originalResolvedOptions.call(this); o.timeZone=timezoneId; return o; };
             }
@@ -398,7 +397,6 @@ async function applyAntiDetectionScripts(pageOrContext, detectedTimezoneId) {
 }
 console.log('MAIN.JS: Anti-detection script function defined.');
 
-// --- NEW HUMAN BEHAVIOR SIMULATION ---
 async function simulateHumanBehavior(page, loggerToUse, stage = 'general') {
     loggerToUse.debug(`Simulating human behavior (stage: ${stage})...`);
     try {
@@ -426,11 +424,6 @@ async function simulateHumanBehavior(page, loggerToUse, stage = 'general') {
     }
 }
 console.log('MAIN.JS: Human behavior simulation function defined.');
-
-
-// --- ALL OTHER HELPER FUNCTIONS ---
-// (Full implementations for extractVideoId, getVideoDuration, clickIfExists, handleAds, ensureVideoPlaying,
-// watchVideoOnPage, handleYouTubeConsent with updated checkForConsentIndicators, waitForVideoPlayer)
 
 async function handleYouTubeConsent(page, loggerToUse = GlobalLogger) {
     loggerToUse.info('Handling YouTube consent with comprehensive detection strategies...');
@@ -1039,7 +1032,7 @@ async function actorMainLogic() {
             if (!url || typeof url !== 'string' || (!url.includes('youtube.com') && !url.includes('youtu.be') && !url.includes('rumble.com'))) {
                 GlobalLogger.warning(`Invalid or unsupported URL at index ${i}: "${url}". Skipping.`); continue;
             }
-            const videoId = extractVideoId(url); // This was the failing line
+            const videoId = extractVideoId(url);
             if (!videoId) { GlobalLogger.warning(`Could not extract video ID from URL: "${url}". Skipping.`); continue; }
             const platform = url.includes('youtube.com')||url.includes('youtu.be') ? 'youtube' : (url.includes('rumble.com') ? 'rumble' : 'unknown');
             if (platform === 'unknown') { GlobalLogger.warning(`Unknown platform for URL: "${url}". Skipping.`); continue; }

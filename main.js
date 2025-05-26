@@ -20,13 +20,13 @@ const ANTI_DETECTION_ARGS = [
     '--password-store=basic',
     '--use-mock-keychain',
     '--enable-precise-memory-info',
-    '--window-size=1920,1080', // Default window size, can be overridden by context/page viewport
+    '--window-size=1920,1080',
     '--disable-infobars',
     '--disable-notifications',
     '--disable-popup-blocking',
     '--disable-dev-shm-usage',
     '--no-sandbox',
-    '--disable-gpu', // Often necessary in Docker/headless environments
+    '--disable-gpu',
     '--disable-setuid-sandbox',
     '--disable-software-rasterizer',
     '--mute-audio',
@@ -110,22 +110,23 @@ function getYouTubeSearchUrl(keyword, countryCode, detectedLocale) {
 // --- END GEO HELPER FUNCTIONS ---
 
 // --- NEW HELPER FUNCTIONS (from latest suggestions) ---
-async function setPreventiveConsentCookies(page, logEntry) {
+async function setPreventiveConsentCookies(page, loggerToUse) { // Changed parameter name for clarity
     try {
         await page.context().addCookies([
             { name: 'CONSENT', value: 'PENDING+987', domain: '.youtube.com', path: '/' },
-            { name: 'SOCS', value: 'CAESEwgDEgk0ODE3Nzk3MjQaAmVuIAEaBgiA_LmvBg', domain: '.youtube.com', path: '/', secure: true, sameSite: 'None'},
+            { name: 'SOCS', value: 'CAESEwgDEgk0ODE3Nzk3MjQaAmVuIAEaBgiA_LmvBg', domain: '.youtube.com', path: '/', secure: true, sameSite: 'None'}, // Common example, might change
             { name: '__Secure-YT-GDPR', value: '1', domain: '.youtube.com', path: '/', secure: true, sameSite: 'Lax' }
         ]);
-        logEntry('Set preventive consent cookies (CONSENT=PENDING+987, SOCS, __Secure-YT-GDPR=1).');
+        loggerToUse.info('Set preventive consent cookies (CONSENT=PENDING+987, SOCS, __Secure-YT-GDPR=1).');
     } catch (e) {
-        logEntry(`Failed to set preventive cookies: ${e.message}`, 'debug');
+        loggerToUse.debug(`Failed to set preventive cookies: ${e.message}`);
     }
 }
 
-async function debugPageState(page, logEntry, context = '') {
+// MODIFIED debugPageState to use loggerToUse.info and loggerToUse.warn
+async function debugPageState(page, loggerToUse, context = '') {
     if (!page || page.isClosed()) {
-        logEntry(`Page debug ${context}: Page is closed or undefined. Cannot get state.`, 'warn');
+        loggerToUse.warn(`Page debug ${context}: Page is closed or undefined. Cannot get state.`);
         return null;
     }
     try {
@@ -135,7 +136,6 @@ async function debugPageState(page, logEntry, context = '') {
                 title: document.title,
                 bodyTextSample: document.body ? document.body.innerText.substring(0, 200).replace(/\s+/g, ' ') : 'No body',
                 consentElements: [],
-                allDialogs: [], // Retained for potential future use
                 buttons: []
             };
             const consentSelectors = ['ytd-consent-bump-v2-lightbox', '[role="dialog"]', 'tp-yt-paper-dialog', '.consent-bump', '#consent-bump', '[aria-modal="true"]'];
@@ -145,7 +145,7 @@ async function debugPageState(page, logEntry, context = '') {
                     info.consentElements.push({
                         tag: elem.tagName,
                         id: elem.id,
-                        class: elem.className,
+                        class: elem.className, // Added class for more info
                         selector: sel,
                         index: i,
                         visible: style.display !== 'none' && style.visibility !== 'hidden' && style.opacity !== '0' && elem.offsetHeight > 0,
@@ -171,24 +171,24 @@ async function debugPageState(page, logEntry, context = '') {
             });
             return info;
         });
-        logEntry(`Page debug context [${context}]: ${JSON.stringify(pageInfo, null, 2)}`);
+        loggerToUse.info(`Page debug context [${context}]: ${JSON.stringify(pageInfo, null, 2)}`);
         return pageInfo;
     } catch (e) {
-        logEntry(`Page debug for context [${context}] failed: ${e.message}`, 'warn');
+        loggerToUse.warn(`Page debug for context [${context}] failed: ${e.message}`);
         return null;
     }
 }
 
-async function debugClickElement(page, selector, logEntry) {
+async function debugClickElement(page, selector, loggerToUse) { // Changed parameter name
     if (!page || page.isClosed()) {
-        logEntry(`DebugClickElement: Page is closed for selector ${selector}.`, 'warn');
+        loggerToUse.warn(`DebugClickElement: Page is closed for selector ${selector}.`);
         return null;
     }
     try {
         const element = page.locator(selector).first();
         const isPresent = await element.count() > 0;
         if (!isPresent) {
-            logEntry(`DebugClickElement: Element ${selector} not found.`, 'debug');
+            loggerToUse.debug(`DebugClickElement: Element ${selector} not found.`);
             return { isPresent: false };
         }
 
@@ -196,13 +196,11 @@ async function debugClickElement(page, selector, logEntry) {
         const isEnabled = await element.isEnabled().catch(() => false);
         const boundingBox = await element.boundingBox().catch(() => null);
         let inViewport = false;
-        if (boundingBox) {
+        if (boundingBox && page.viewportSize()) { // Added check for viewportSize()
             const viewport = page.viewportSize();
-            if (viewport) {
                  inViewport = boundingBox.x >= 0 && boundingBox.y >= 0 &&
                                  boundingBox.x + boundingBox.width <= viewport.width &&
                                  boundingBox.y + boundingBox.height <= viewport.height;
-            }
         }
         const isActuallyClickable = await page.evaluate((sel) => {
             const elem = document.querySelector(sel);
@@ -218,10 +216,10 @@ async function debugClickElement(page, selector, logEntry) {
         }, selector).catch(e => `eval-error: ${e.message}`);
 
         const debugInfo = { selector, isPresent, isVisible, isEnabled, boundingBox, inViewport, isActuallyClickable };
-        logEntry(`DebugClickElement for ${selector}: ${JSON.stringify(debugInfo)}`);
+        loggerToUse.info(`DebugClickElement for ${selector}: ${JSON.stringify(debugInfo)}`);
         return debugInfo;
     } catch (e) {
-        logEntry(`DebugClickElement for ${selector} failed: ${e.message}`, 'warn');
+        loggerToUse.warn(`DebugClickElement for ${selector} failed: ${e.message}`);
         return null;
     }
 }
@@ -297,7 +295,7 @@ async function applyAntiDetectionScripts(pageOrContext, detectedTimezoneId) {
     (GlobalLogger || console).debug(`[AntiDetection] Injecting anti-detection script with dynamic timezoneId: ${detectedTimezoneId}`);
     if (pageOrContext.addInitScript) {
         await pageOrContext.addInitScript(antiDetectionFunctionInBrowser, detectedTimezoneId);
-    } else if (pageOrContext.evaluateOnNewDocument) {
+    } else if (pageOrContext.evaluateOnNewDocument) { // Fallback for older Playwright or different contexts
         const scriptString = `(${antiDetectionFunctionInBrowser.toString()})(${JSON.stringify(detectedTimezoneId)});`;
         await pageOrContext.evaluateOnNewDocument(scriptString);
     } else {
@@ -336,7 +334,7 @@ async function getVideoDuration(page, loggerToUse = GlobalLogger) {
         } catch (e) {
             (loggerToUse || console).debug(`Attempt ${i+1} to get duration failed: ${e.message}`);
         }
-        await new Promise(resolve => setTimeout(resolve, 1000));
+        await new Promise(resolve => setTimeout(resolve, 1000)); // Use Promise for async/await
     }
     (loggerToUse || console).warning('Could not determine video duration after 15 seconds.');
     return null;
@@ -353,8 +351,8 @@ async function clickIfExists(pageOrFrame, selector, timeout = 3000, loggerToUse 
             return true;
         } catch (clickError) {
             (loggerToUse || console).debug(`Normal click failed for ${selector}${logSuffix}, trying with force. Error: ${clickError.message.split('\n')[0]}`);
-            const elementForForce = pageOrFrame.locator(selector).first();
-            await elementForForce.waitFor({ state: 'visible', timeout });
+            const elementForForce = pageOrFrame.locator(selector).first(); // Re-locate for safety, though usually not needed
+            await elementForForce.waitFor({ state: 'visible', timeout }); // Re-wait
             await elementForForce.click({ timeout: timeout / 2, force: true, noWaitAfter: false });
             (loggerToUse || console).info(`Clicked on selector with force: ${selector}${logSuffix}`);
             return true;
@@ -370,7 +368,7 @@ async function handleAds(page, platform, effectiveInput, loggerToUse = GlobalLog
     (loggerToUse || console).info('Starting ad handling logic.');
     const adCheckInterval = 3000;
     let adWatchLoop = 0;
-    const maxAdLoopIterations = Math.ceil((effectiveInput.maxSecondsAds * 1000) / adCheckInterval) + 5;
+    const maxAdLoopIterations = Math.ceil((effectiveInput.maxSecondsAds * 1000) / adCheckInterval) + 5; // Add buffer
 
     for (adWatchLoop = 0; adWatchLoop < maxAdLoopIterations; adWatchLoop++) {
         let isAdPlaying = false; let canSkip = false; let adCurrentTime = adWatchLoop * (adCheckInterval / 1000);
@@ -382,7 +380,7 @@ async function handleAds(page, platform, effectiveInput, loggerToUse = GlobalLog
              if (isAdPlaying) { (loggerToUse || console).info('Rumble ad detected.'); canSkip = await page.locator('button[aria-label*="Skip Ad"], div[class*="skip-button"], .videoAdUiSkipButton').count() > 0; }
         }
         if (!isAdPlaying) { (loggerToUse || console).info('No ad currently playing or ad finished.'); break; }
-        const minSkipTime = Array.isArray(effectiveInput.skipAdsAfter) && effectiveInput.skipAdsAfter.length > 0 ? parseInt(effectiveInput.skipAdsAfter[0],10) : 5;
+        const minSkipTime = Array.isArray(effectiveInput.skipAdsAfter) && effectiveInput.skipAdsAfter.length > 0 ? parseInt(String(effectiveInput.skipAdsAfter[0]),10) : 5; // Ensure string conversion
         if (effectiveInput.autoSkipAds && canSkip) {
             (loggerToUse || console).info('Attempting to skip ad (autoSkipAds).');
             await clickIfExists(page, '.ytp-ad-skip-button-modern, .ytp-ad-skip-button, button[aria-label*="Skip Ad"], div[class*="skip-button"], .videoAdUiSkipButton', 1000, loggerToUse);
@@ -405,54 +403,50 @@ async function handleAds(page, platform, effectiveInput, loggerToUse = GlobalLog
     (loggerToUse || console).info('Ad handling finished or timed out.');
 }
 
-async function ensureVideoPlaying(page, playButtonSelectors, logEntry) {
-    logEntry('Ensuring video is playing with enhanced interaction...');
+async function ensureVideoPlaying(page, playButtonSelectors, loggerToUse) { // Changed from logEntry to loggerToUse
+    loggerToUse.info('Ensuring video is playing with enhanced interaction...');
     for (let attempt = 0; attempt < 5; attempt++) {
         const videoState = await page.evaluate(() => {
             const video = document.querySelector('video.html5-main-video, video.rumble-player-video');
             if (video) return { paused: video.paused, currentTime: video.currentTime, readyState: video.readyState, muted: video.muted };
             return null;
-        }).catch(e => { logEntry(`Error getting video state in ensureVideoPlaying: ${e.message}`, 'warn'); return null; });
+        }).catch(e => { loggerToUse.warn(`Error getting video state in ensureVideoPlaying: ${e.message}`); return null; });
 
         if (!videoState) {
-            logEntry('No video element found in ensureVideoPlaying', 'warn');
+            loggerToUse.warn('No video element found in ensureVideoPlaying');
             if (attempt < 4) { await page.waitForTimeout(1000); continue; }
             return false;
         }
         if (!videoState.paused) {
-            logEntry(`Video is playing (attempt ${attempt + 1}). Time: ${videoState.currentTime?.toFixed(2)}s`);
+            loggerToUse.info(`Video is playing (attempt ${attempt + 1}). Time: ${videoState.currentTime?.toFixed(2)}s`);
             return true;
         }
-        logEntry(`Video is paused (attempt ${attempt + 1}). CT: ${videoState.currentTime?.toFixed(2)}s. RS: ${videoState.readyState}. Muted: ${videoState.muted}. Trying play strategies.`);
+        loggerToUse.info(`Video is paused (attempt ${attempt + 1}). CT: ${videoState.currentTime?.toFixed(2)}s. RS: ${videoState.readyState}. Muted: ${videoState.muted}. Trying play strategies.`);
 
-        // Strategy 1: Click video element directly
         try {
-            logEntry('Strategy 1: Clicking video element directly.');
+            loggerToUse.debug('Strategy 1: Clicking video element directly.');
             await page.locator('video.html5-main-video, video.rumble-player-video').first().click({ timeout: 2000, force: true });
             await page.waitForTimeout(1000 + Math.random() * 500);
             if (await page.evaluate(() => document.querySelector('video.html5-main-video, video.rumble-player-video')?.paused === false)) {
-                logEntry('Video started playing after video element click.'); return true;
+                loggerToUse.info('Video started playing after video element click.'); return true;
             }
-            logEntry('Video still paused after video element click.');
-        } catch (e) { logEntry(`Video element click failed: ${e.message}`, 'debug'); }
+            loggerToUse.debug('Video still paused after video element click.');
+        } catch (e) { loggerToUse.debug(`Video element click failed: ${e.message}`); }
 
-        // Strategy 2: Try play buttons
-        logEntry('Strategy 2: Trying play buttons.');
+        loggerToUse.debug('Strategy 2: Trying play buttons.');
         for (const selector of playButtonSelectors) {
-            const tempLoggerForClick = {info: logEntry, debug: logEntry, warning: logEntry, error: logEntry};
-            if (await clickIfExists(page, selector, 2000, tempLoggerForClick)) {
-                logEntry(`Clicked play button: ${selector}`);
+            if (await clickIfExists(page, selector, 2000, loggerToUse)) { // Pass loggerToUse directly
+                loggerToUse.info(`Clicked play button: ${selector}`); // clickIfExists logs its own success, this is redundant but ok
                 await page.waitForTimeout(1000 + Math.random() * 500);
                 if (await page.evaluate(() => document.querySelector('video.html5-main-video, video.rumble-player-video')?.paused === false)) {
-                    logEntry('Video started playing after play button click.'); return true;
+                    loggerToUse.info('Video started playing after play button click.'); return true;
                 }
-                logEntry(`Video still paused after clicking ${selector}.`);
+                loggerToUse.debug(`Video still paused after clicking ${selector}.`);
             }
         }
 
-        // Strategy 3: JavaScript play() method
         try {
-            logEntry('Strategy 3: Attempting JavaScript video.play().');
+            loggerToUse.debug('Strategy 3: Attempting JavaScript video.play().');
             await page.evaluate(() => {
                 const video = document.querySelector('video.html5-main-video, video.rumble-player-video');
                 if (video) {
@@ -462,35 +456,48 @@ async function ensureVideoPlaying(page, playButtonSelectors, logEntry) {
             });
             await page.waitForTimeout(1500 + Math.random() * 500);
             if (await page.evaluate(() => document.querySelector('video.html5-main-video, video.rumble-player-video')?.paused === false)) {
-                logEntry('Video started playing after JavaScript play().'); return true;
+                loggerToUse.info('Video started playing after JavaScript play().'); return true;
             }
-            logEntry('Video still paused after JavaScript play() attempt.');
-        } catch (e) { logEntry(`JavaScript play evaluation failed: ${e.message}`, 'debug'); }
+            loggerToUse.debug('Video still paused after JavaScript play() attempt.');
+        } catch (e) { loggerToUse.debug(`JavaScript play evaluation failed: ${e.message}`); }
 
-        // Strategy 4: Spacebar to play/pause
         try {
-            logEntry('Strategy 4: Attempting Spacebar press.');
-            await page.locator('body').first().focus({timeout:1000}).catch(e => logEntry('Failed to focus body for spacebar.', 'debug'));
+            loggerToUse.debug('Strategy 4: Attempting Spacebar press.');
+            await page.locator('body').first().focus({timeout:1000}).catch(e => loggerToUse.debug('Failed to focus body for spacebar.'));
             await page.keyboard.press('Space');
             await page.waitForTimeout(1000 + Math.random() * 500);
             if (await page.evaluate(() => document.querySelector('video.html5-main-video, video.rumble-player-video')?.paused === false)) {
-                logEntry('Video started playing after spacebar press.'); return true;
+                loggerToUse.info('Video started playing after spacebar press.'); return true;
             }
-            logEntry('Video still paused after spacebar press.');
-        } catch (e) { logEntry(`Spacebar press failed: ${e.message}`, 'debug'); }
+            loggerToUse.debug('Video still paused after spacebar press.');
+        } catch (e) { loggerToUse.debug(`Spacebar press failed: ${e.message}`); }
 
         if (attempt < 4) {
-            logEntry(`Waiting ${2000 + attempt * 500}ms before next play attempt...`);
+            loggerToUse.debug(`Waiting ${2000 + attempt * 500}ms before next play attempt...`);
             await page.waitForTimeout(2000 + attempt * 500);
         }
     }
-    logEntry('Failed to start video playback after all attempts', 'error');
+    loggerToUse.error('Failed to start video playback after all attempts');
     return false;
 }
 
 async function watchVideoOnPage(page, job, effectiveInput, loggerToUse = GlobalLogger) {
-    const jobResult = { /* ... */ }; // Maintained from previous, jobId, url, etc.
-    const logEntry = (msg, level = 'info') => { /* ... */ }; // Maintained from previous
+    const jobResult = {
+        jobId: job.id, url: job.url, videoId: job.videoId, platform: job.platform, status: 'pending',
+        watchTimeRequestedSec: 0, watchTimeActualSec: 0, durationFoundSec: null,
+        startTime: new Date().toISOString(), endTime: null, error: null, log: []
+    };
+    // Define logEntry for this scope, using the passed loggerToUse
+    const logEntry = (msg, level = 'info') => {
+        const formattedMessage = `[Job ${job.id.substring(0,6)}] ${msg}`; // Ensure job context in message
+        if (loggerToUse && typeof loggerToUse[level] === 'function') {
+            loggerToUse[level](formattedMessage);
+        } else { // Fallback if loggerToUse is not a full logger object
+            (GlobalLogger || console)[level](formattedMessage);
+        }
+        jobResult.log.push(`[${new Date().toISOString()}] [${level.toUpperCase()}] ${msg}`); // Original message for job log
+    };
+
 
     try {
         logEntry('Handling initial ads.');
@@ -501,12 +508,12 @@ async function watchVideoOnPage(page, job, effectiveInput, loggerToUse = GlobalL
             ? ['.ytp-large-play-button', '.ytp-play-button[aria-label*="Play"]', 'button[title*="Play"]']
             : ['.rumbles-player-play-button', 'video.rumble-player-video', 'button[data-plyr="play"]'];
 
-        if (!await ensureVideoPlaying(page, playButtonSelectors, logEntry)) {
+        if (!await ensureVideoPlaying(page, playButtonSelectors, loggerToUse)) { // Pass loggerToUse
             logEntry('Video playback could not be confirmed. Checking for reappeared consent dialog...', 'warn');
-            const consentHandledAgain = await handleYouTubeConsent(page, {info:logEntry,debug:logEntry,warning:logEntry,error:logEntry}); // Pass scoped logger
+            const consentHandledAgain = await handleYouTubeConsent(page, loggerToUse); // Pass loggerToUse
             if (consentHandledAgain) {
                 logEntry('Reappeared consent dialog handled. Retrying video play assurance.');
-                if (!await ensureVideoPlaying(page, playButtonSelectors, logEntry)) {
+                if (!await ensureVideoPlaying(page, playButtonSelectors, loggerToUse)) { // Pass loggerToUse
                      throw new Error('Video playback failed even after re-handling consent.');
                 }
             } else {
@@ -514,10 +521,18 @@ async function watchVideoOnPage(page, job, effectiveInput, loggerToUse = GlobalL
             }
         }
 
-        await page.evaluate(() => { /* Unmute/volume logic from previous */ }).catch(e => logEntry(`Unmute/volume setting failed: ${e.message}`, 'debug'));
+        await page.evaluate(() => {
+            const v = document.querySelector('video.html5-main-video, video.rumble-player-video');
+            if(v) {
+                v.muted=false; v.volume=0.05 + Math.random() * 0.1;
+                console.log(`[In-Page Eval] Video unmuted, volume set to ${v.volume.toFixed(2)}`);
+            }
+        }).catch(e => logEntry(`Unmute/volume setting failed: ${e.message}`, 'debug'));
+
         const duration = await getVideoDuration(page, loggerToUse);
-        if (!duration || duration <= 0) throw new Error('Could not determine valid video duration.');
+        if (!duration || duration <= 0) throw new Error('Could not determine valid video duration after multiple attempts.');
         jobResult.durationFoundSec = duration;
+
         const targetWatchTimeSec = Math.floor(duration * (effectiveInput.watchTimePercentage / 100));
         jobResult.watchTimeRequestedSec = targetWatchTimeSec;
         logEntry(`Target watch: ${targetWatchTimeSec.toFixed(2)}s of ${duration.toFixed(2)}s.`);
@@ -530,18 +545,29 @@ async function watchVideoOnPage(page, job, effectiveInput, loggerToUse = GlobalL
         for (let i = 0; i < maxWatchLoops; i++) {
             logEntry(`Watch loop ${i+1}/${maxWatchLoops}. Ads check.`);
             await handleAds(page, job.platform, effectiveInput, loggerToUse);
-            const videoState = await page.evaluate(() => { /* Video state logic from previous */ }).catch(e => { /* ... */ });
-            if (!videoState) { /* ... */ } // Maintained
-            logEntry(`State: time=${videoState.ct?.toFixed(2)}, paused=${videoState.p}, ended=${videoState.e}, ...`); // Maintained
+            const videoState = await page.evaluate(() => {
+                const v = document.querySelector('video.html5-main-video, video.rumble-player-video');
+                return v ? { ct:v.currentTime, p:v.paused, e:v.ended, rs:v.readyState, ns:v.networkState, vol: v.volume, mut: v.muted } : null;
+            }).catch(e => { logEntry(`Video state error: ${e.message}`, 'warn'); return null; });
+
+            if (!videoState) {
+                logEntry('Video element not found in evaluate (watch loop), attempting to find again.', 'warn');
+                await page.waitForTimeout(1000);
+                const videoExists = await page.locator('video.html5-main-video, video.rumble-player-video').count() > 0;
+                if (!videoExists) throw new Error('Video element disappeared definitively during watch loop.');
+                continue;
+            }
+
+            logEntry(`State: time=${videoState.ct?.toFixed(2)}, paused=${videoState.p}, ended=${videoState.e}, ready=${videoState.rs}, net=${videoState.ns}, vol=${videoState.vol?.toFixed(2)}, muted=${videoState.mut}`);
 
             if (videoState.p && !videoState.e) {
                 logEntry('Video is paused mid-watch, attempting to ensure it plays.');
-                if (!await ensureVideoPlaying(page, playButtonSelectors, logEntry)) {
+                if (!await ensureVideoPlaying(page, playButtonSelectors, loggerToUse)) { // Pass loggerToUse
                     logEntry('Video remains paused. Checking for reappeared consent dialog (mid-watch)...', 'warn');
-                    const consentReappeared = await handleYouTubeConsent(page, {info:logEntry,debug:logEntry,warning:logEntry,error:logEntry});
+                    const consentReappeared = await handleYouTubeConsent(page, loggerToUse); // Pass loggerToUse
                     if (consentReappeared) {
                          logEntry('Reappeared consent handled during watch loop. Retrying play assurance.');
-                         if(!await ensureVideoPlaying(page, playButtonSelectors, logEntry)) {
+                         if(!await ensureVideoPlaying(page, playButtonSelectors, loggerToUse)) { // Pass loggerToUse
                             logEntry('Still could not resume video after re-handling consent. Breaking watch loop.', 'error'); break;
                          }
                     } else {
@@ -551,18 +577,26 @@ async function watchVideoOnPage(page, job, effectiveInput, loggerToUse = GlobalL
             }
             currentActualWatchTime = videoState.ct || 0;
             jobResult.watchTimeActualSec = currentActualWatchTime;
-            if (currentActualWatchTime >= targetWatchTimeSec || videoState.e) { /* ... */ break; } // Maintained
-            if (i % 6 === 0 && i > 0) { /* Mouse move from previous */ }
+            if (currentActualWatchTime >= targetWatchTimeSec || videoState.e) {
+                logEntry(`Target watch time reached or video ended. Actual: ${currentActualWatchTime.toFixed(2)}s`); break;
+            }
+            if (i % 6 === 0 && i > 0) {
+                 await page.mouse.move(Math.random()*500,Math.random()*300,{steps:5}).catch(()=>{});
+                 logEntry('Simulated mouse move.','debug');
+            }
             await page.waitForTimeout(watchIntervalMs);
         }
         if (currentActualWatchTime < targetWatchTimeSec) logEntry(`Watched ${currentActualWatchTime.toFixed(2)}s < target ${targetWatchTimeSec.toFixed(2)}s.`, 'warn');
         jobResult.status = 'success';
-    } catch (e) { /* ... error handling ... */ } // Maintained
-    finally { jobResult.endTime = new Date().toISOString(); }
+    } catch (e) {
+        logEntry(`Error watching video ${job.url}: ${e.message}`, 'error');
+        jobResult.status = 'failure';
+        jobResult.error = e.message + (e.stack ? `\nStack: ${e.stack}` : '');
+    } finally {
+        jobResult.endTime = new Date().toISOString();
+    }
     return jobResult;
 }
-// (JobResult and logEntry for watchVideoOnPage are conceptual here, they are defined inside the function in the actual code)
-
 
 // --- NEW COMPREHENSIVE handleYouTubeConsent FUNCTION ---
 async function handleYouTubeConsent(page, loggerToUse = GlobalLogger) {
@@ -797,18 +831,22 @@ async function runSingleJob(job, effectiveInput, actorProxyConfiguration, custom
     const jobScopedLogger = {
         info: (msg) => logger.info(`[Job ${job.id.substring(0,6)}] ${msg}`),
         warning: (msg) => logger.warning(`[Job ${job.id.substring(0,6)}] ${msg}`),
-        error: (msg, data) => logger.error(`[Job ${job.id.substring(0,6)}] ${msg}`, data),
+        error: (msg, data) => logger.error(`[Job ${job.id.substring(0,6)}] ${msg}`, data), // Accept data for error
         debug: (msg) => logger.debug(`[Job ${job.id.substring(0,6)}] ${msg}`),
     };
     const jobResult = {
         jobId: job.id, url: job.url, videoId: job.videoId, platform: job.platform,
         proxyUsed: 'None', status: 'initiated', error: null, log: []
     };
+    // logEntry defined within runSingleJob to capture job-specific details in jobResult.log
     const logEntry = (msg, level = 'info') => {
         const tsMsg = `[${new Date().toISOString()}] [${level.toUpperCase()}] ${msg}`;
+        // Use jobScopedLogger for console/Apify logs
         if (jobScopedLogger && typeof jobScopedLogger[level] === 'function') {
+            // jobScopedLogger already prepends job ID to console logs
             jobScopedLogger[level](msg);
         } else {
+            // Fallback if jobScopedLogger somehow isn't right
             const fallbackLogger = GlobalLogger || console;
             if (fallbackLogger && typeof fallbackLogger[level] === 'function') {
                  fallbackLogger[level](`[Job ${job.id.substring(0,6)}] ${msg}`);
@@ -816,7 +854,7 @@ async function runSingleJob(job, effectiveInput, actorProxyConfiguration, custom
                 console.log(`[${level.toUpperCase()}] [Job ${job.id.substring(0,6)}] ${msg}`);
             }
         }
-        jobResult.log.push(tsMsg);
+        jobResult.log.push(tsMsg); // Store raw message with timestamp for detailed job log
     };
 
     logEntry(`Starting job for URL: ${job.url} with watchType: ${job.watchType}`);
@@ -868,21 +906,27 @@ async function runSingleJob(job, effectiveInput, actorProxyConfiguration, custom
             : await playwright.chromium.launch(launchOptions);
         logEntry('Browser launched.');
 
+        const existingHeaders = launchOptions.extraHTTPHeaders || {};
         context = await browser.newContext({
             bypassCSP: true, ignoreHTTPSErrors: true,
             viewport: { width: Math.min(1920, 1280 + Math.floor(Math.random() * 200)), height: Math.min(1080, 720 + Math.floor(Math.random() * 100)) },
             locale: detectedLocale, timezoneId: detectedTimezone, javaScriptEnabled: true,
-            extraHTTPHeaders: { 'Accept-Language': `${detectedLocale.replace('_', '-')},en;q=0.9` }
+            extraHTTPHeaders: { ...existingHeaders, 'Accept-Language': `${detectedLocale.replace('_', '-')},en;q=0.9` } // Merge with existing
         });
         await applyAntiDetectionScripts(context, detectedTimezone);
+
         if (job.watchType === 'referer' && job.refererUrl) {
-            await context.setExtraHTTPHeaders({ ...context.extraHTTPHeaders(), 'Referer': job.refererUrl }); // Merge headers
+            logEntry(`Setting referer to: ${job.refererUrl}`);
+            // Get current extraHTTPHeaders from context to preserve them
+            const currentExtraHeaders = context._options.extraHTTPHeaders || {}; // Accessing internal option, might need adjustment based on Playwright version or use a safer method if available
+            await context.setExtraHTTPHeaders({ ...currentExtraHeaders, 'Referer': job.refererUrl });
         }
+
 
         page = await context.newPage();
         await page.setViewportSize({ width: Math.min(1920, 1200 + Math.floor(Math.random() * 120)), height: Math.min(1080, 700 + Math.floor(Math.random() * 80)) });
 
-        await setPreventiveConsentCookies(page, logEntry);
+        await setPreventiveConsentCookies(page, jobScopedLogger); // Pass jobScopedLogger
 
         if (job.watchType === 'search' && job.searchKeywords && job.searchKeywords.length > 0) {
             const keyword = job.searchKeywords[Math.floor(Math.random() * job.searchKeywords.length)];
@@ -971,8 +1015,7 @@ async function runSingleJob(job, effectiveInput, actorProxyConfiguration, custom
                         } else { logEntry(`Link (selector ${selector}) not visible.`, 'debug'); }
                     } catch (e) { logEntry(`Error processing selector ${selector}: ${e.message.split('\n')[0]}`, 'debug'); }
                 }
-                // Strategy 5: Keyboard navigation (last resort)
-                logEntry('All click/goto strategies failed for links. Trying Keyboard nav for first plausible selector.');
+                logEntry('All click/goto strategies for found links failed. Trying Keyboard nav as a last resort.');
                 const firstPlausibleSelector = `a#video-title[href*="/watch?v=${job.videoId}"]`;
                 try {
                     const videoLinkForKeyboard = page.locator(firstPlausibleSelector).first();
@@ -1059,10 +1102,12 @@ async function actorMainLogic() {
     await ApifyModule.Actor.init();
     console.log('ACTOR_MAIN_LOGIC: Actor.init() completed.');
 
-    if (ApifyModule.Actor.log && typeof ApifyModule.Actor.log.info === 'function') {
+    if (typeof ApifyModule.Actor.log !== 'undefined' && typeof ApifyModule.Actor.log.info === 'function') {
         GlobalLogger = ApifyModule.Actor.log;
-    } else if (ApifyModule.utils && ApifyModule.utils.log && typeof ApifyModule.utils.log.info === 'function') {
+         GlobalLogger.info("Apify.Actor.log assigned to GlobalLogger.");
+    } else if (typeof ApifyModule.utils !== 'undefined' && typeof ApifyModule.utils.log !== 'undefined' && typeof ApifyModule.utils.log.info === 'function') {
         GlobalLogger = ApifyModule.utils.log;
+        GlobalLogger.info("Apify.utils.log assigned to GlobalLogger.");
     } else {
         GlobalLogger = {
             info: (message, data) => console.log(`CONSOLE_INFO: ${message}`, data || ''),
@@ -1070,7 +1115,7 @@ async function actorMainLogic() {
             error: (message, data) => console.error(`CONSOLE_ERROR: ${message}`, data || ''),
             debug: (message, data) => console.log(`CONSOLE_DEBUG: ${message}`, data || ''),
         };
-        GlobalLogger.warning('Using console fallback for GlobalLogger.');
+        GlobalLogger.warning('Using console fallback for GlobalLogger. Apify Actor/utils log not found.');
     }
     GlobalLogger.info('Starting YouTube & Rumble View Bot Actor (Apify SDK v3 compatible).');
 
@@ -1084,7 +1129,6 @@ async function actorMainLogic() {
         watchTimePercentage: 80, useProxies: true, proxyUrls: [], proxyCountry: null, proxyGroups: ['RESIDENTIAL'],
         headless: true, concurrency: 1, concurrencyInterval: 5, timeout: 120, maxSecondsAds: 15,
         skipAdsAfter: ["5", "10"], autoSkipAds: true, stopSpawningOnOverload: true,
-        // Fields from original default not explicitly mentioned in recent changes, but kept for completeness
         useAV1: false, disableProxyTests: false, enableEngagement: false, leaveComment: false, performLike: false, subscribeToChannel: false
     };
     const rawInput = input || {};
@@ -1095,7 +1139,7 @@ async function actorMainLogic() {
                 if (Array.isArray(rawInput[key]) && rawInput[key].length > 0) { effectiveInput[key] = rawInput[key]; }
                 else if (Array.isArray(rawInput[key]) && rawInput[key].length === 0 &&
                            (key === 'proxyUrls' || key === 'watchTypes' || key === 'refererUrls' || key === 'searchKeywordsForEachVideo')) {
-                    effectiveInput[key] = []; // Allow empty arrays for these specific fields
+                    effectiveInput[key] = [];
                 }
             } else { effectiveInput[key] = rawInput[key]; }
         }

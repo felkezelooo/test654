@@ -37,13 +37,10 @@ const ANTI_DETECTION_ARGS_NEW = [
     '--disable-component-extensions-with-background-pages',
     '--disable-hang-monitor',
     '--disable-prompt-on-repost',
-    // '--disable-web-security', // Keep commented unless strictly necessary for a specific site
-    // '--allow-running-insecure-content',
     '--use-fake-ui-for-media-stream',
     '--use-fake-device-for-media-stream',
     '--password-store=basic',
     '--use-mock-keychain',
-    // '--enable-precise-memory-info', // Commented out, could be a fingerprinting vector
     '--force-webrtc-ip-handling-policy=default_public_interface_only',
     '--disable-site-isolation-trials',
 ];
@@ -125,6 +122,7 @@ function getYouTubeSearchUrl(keyword, countryCode, detectedLocale) {
 }
 console.log('MAIN.JS: Geo helper functions defined.');
 
+// --- DEBUGGING & PREVENTIVE HELPER FUNCTIONS ---
 async function setPreventiveConsentCookies(page, loggerToUse) {
     try {
         await page.context().addCookies([
@@ -235,7 +233,9 @@ async function debugClickElement(page, selector, loggerToUse) {
         return null;
     }
 }
+console.log('MAIN.JS: Debugging helper functions defined.');
 
+// --- ANTI-DETECTION SCRIPT FUNCTION ---
 async function applyAntiDetectionScripts(pageOrContext, detectedTimezoneId) {
     const comprehensiveAntiDetectionScript = (timezoneId) => {
         // Webdriver Traces
@@ -397,6 +397,7 @@ async function applyAntiDetectionScripts(pageOrContext, detectedTimezoneId) {
 }
 console.log('MAIN.JS: Anti-detection script function defined.');
 
+// --- HUMAN BEHAVIOR SIMULATION ---
 async function simulateHumanBehavior(page, loggerToUse, stage = 'general') {
     loggerToUse.debug(`Simulating human behavior (stage: ${stage})...`);
     try {
@@ -424,6 +425,146 @@ async function simulateHumanBehavior(page, loggerToUse, stage = 'general') {
     }
 }
 console.log('MAIN.JS: Human behavior simulation function defined.');
+
+// --- CORE HELPER FUNCTIONS ---
+async function clickIfExists(pageOrFrame, selector, timeout = 3000, loggerToUse = GlobalLogger, isFrameContext = false) {
+    const logSuffix = isFrameContext ? ' (in iframe)' : '';
+    try {
+        const element = pageOrFrame.locator(selector).first();
+        await element.waitFor({ state: 'visible', timeout });
+        try {
+            await element.click({ timeout: timeout / 2, force: false, noWaitAfter: false });
+            (loggerToUse || console).info(`Clicked on selector: ${selector}${logSuffix}`);
+            return true;
+        } catch (clickError) {
+            (loggerToUse || console).debug(`Normal click failed for ${selector}${logSuffix}, trying with force. Error: ${clickError.message.split('\n')[0]}`);
+            const elementForForce = pageOrFrame.locator(selector).first();
+            await elementForForce.waitFor({ state: 'visible', timeout });
+            await elementForForce.click({ timeout: timeout / 2, force: true, noWaitAfter: false });
+            (loggerToUse || console).info(`Clicked on selector with force: ${selector}${logSuffix}`);
+            return true;
+        }
+    } catch (e) {
+        (loggerToUse || console).debug(`Selector not found/clickable: ${selector}${logSuffix} - Error: ${e.message.split('\n')[0]}`);
+        return false;
+    }
+}
+
+async function handleAds(page, platform, effectiveInput, loggerToUse = GlobalLogger) {
+    (loggerToUse || console).info('Starting ad handling logic.');
+    const adCheckInterval = 3000;
+    let adWatchLoop = 0;
+    const maxAdLoopIterations = Math.ceil((effectiveInput.maxSecondsAds * 1000) / adCheckInterval) + 5;
+
+    for (adWatchLoop = 0; adWatchLoop < maxAdLoopIterations; adWatchLoop++) {
+        let isAdPlaying = false; let canSkip = false; let adCurrentTime = adWatchLoop * (adCheckInterval / 1000);
+        if (platform === 'youtube') {
+            isAdPlaying = await page.locator('.ytp-ad-player-overlay-instream-info, .video-ads .ad-showing').count() > 0;
+            if (isAdPlaying) { (loggerToUse || console).info('YouTube ad detected.'); canSkip = await page.locator('.ytp-ad-skip-button-modern, .ytp-ad-skip-button').count() > 0; }
+        } else if (platform === 'rumble') {
+            isAdPlaying = await page.locator('.video-ad-indicator, .ima-ad-container :not([style*="display: none"]):not([style*="visibility: hidden"])').count() > 0;
+             if (isAdPlaying) { (loggerToUse || console).info('Rumble ad detected.'); canSkip = await page.locator('button[aria-label*="Skip Ad"], div[class*="skip-button"], .videoAdUiSkipButton').count() > 0; }
+        }
+        if (!isAdPlaying) { (loggerToUse || console).info('No ad currently playing or ad finished.'); break; }
+        const minSkipTime = Array.isArray(effectiveInput.skipAdsAfter) && effectiveInput.skipAdsAfter.length > 0 ? parseInt(String(effectiveInput.skipAdsAfter[0]),10) : 5;
+        if (effectiveInput.autoSkipAds && canSkip) {
+            (loggerToUse || console).info('Attempting to skip ad (autoSkipAds).');
+            await clickIfExists(page, '.ytp-ad-skip-button-modern, .ytp-ad-skip-button, button[aria-label*="Skip Ad"], div[class*="skip-button"], .videoAdUiSkipButton', 1000, loggerToUse);
+            await page.waitForTimeout(2000 + Math.random() * 1000); continue;
+        }
+        if (adCurrentTime >= minSkipTime && canSkip) {
+            (loggerToUse || console).info(`Ad has played for ~${adCurrentTime.toFixed(1)}s, attempting to skip (skipAdsAfter).`);
+            await clickIfExists(page, '.ytp-ad-skip-button-modern, .ytp-ad-skip-button, button[aria-label*="Skip Ad"], div[class*="skip-button"], .videoAdUiSkipButton', 1000, loggerToUse);
+            await page.waitForTimeout(2000 + Math.random() * 1000); continue;
+        }
+        if (adCurrentTime >= effectiveInput.maxSecondsAds) {
+             (loggerToUse || console).info(`Ad has played for ~${adCurrentTime.toFixed(1)}s (maxSecondsAds reached).`);
+             if (canSkip) await clickIfExists(page, '.ytp-ad-skip-button-modern, .ytp-ad-skip-button, button[aria-label*="Skip Ad"], div[class*="skip-button"], .videoAdUiSkipButton', 1000, loggerToUse);
+             else (loggerToUse || console).info('Max ad watch time reached, but cannot skip yet.');
+             break;
+        }
+        await page.waitForTimeout(adCheckInterval);
+    }
+    if (adWatchLoop >= maxAdLoopIterations) (loggerToUse || console).warning('Max ad loop iterations reached.');
+    (loggerToUse || console).info('Ad handling finished or timed out.');
+}
+
+async function ensureVideoPlaying(page, playButtonSelectors, loggerToUse) {
+    loggerToUse.info('Ensuring video is playing with enhanced interaction...');
+    for (let attempt = 0; attempt < 5; attempt++) {
+        const videoState = await page.evaluate(() => {
+            const video = document.querySelector('video.html5-main-video, video.rumble-player-video');
+            if (video) return { paused: video.paused, currentTime: video.currentTime, readyState: video.readyState, muted: video.muted };
+            return null;
+        }).catch(e => { loggerToUse.warn(`Error getting video state in ensureVideoPlaying: ${e.message}`); return null; });
+
+        if (!videoState) {
+            loggerToUse.warn('No video element found in ensureVideoPlaying');
+            if (attempt < 4) { await page.waitForTimeout(1000); continue; }
+            return false;
+        }
+        if (!videoState.paused) {
+            loggerToUse.info(`Video is playing (attempt ${attempt + 1}). Time: ${videoState.currentTime?.toFixed(2)}s`);
+            return true;
+        }
+        loggerToUse.info(`Video is paused (attempt ${attempt + 1}). CT: ${videoState.currentTime?.toFixed(2)}s. RS: ${videoState.readyState}. Muted: ${videoState.muted}. Trying play strategies.`);
+
+        try {
+            loggerToUse.debug('Strategy 1: Clicking video element directly.');
+            await page.locator('video.html5-main-video, video.rumble-player-video').first().click({ timeout: 2000, force: true });
+            await page.waitForTimeout(1000 + Math.random() * 500);
+            if (await page.evaluate(() => document.querySelector('video.html5-main-video, video.rumble-player-video')?.paused === false)) {
+                loggerToUse.info('Video started playing after video element click.'); return true;
+            }
+            loggerToUse.debug('Video still paused after video element click.');
+        } catch (e) { loggerToUse.debug(`Video element click failed: ${e.message}`); }
+
+        loggerToUse.debug('Strategy 2: Trying play buttons.');
+        for (const selector of playButtonSelectors) {
+            if (await clickIfExists(page, selector, 2000, loggerToUse)) {
+                await page.waitForTimeout(1000 + Math.random() * 500);
+                if (await page.evaluate(() => document.querySelector('video.html5-main-video, video.rumble-player-video')?.paused === false)) {
+                    loggerToUse.info('Video started playing after play button click.'); return true;
+                }
+                loggerToUse.debug(`Video still paused after clicking ${selector}.`);
+            }
+        }
+
+        try {
+            loggerToUse.debug('Strategy 3: Attempting JavaScript video.play().');
+            await page.evaluate(() => {
+                const video = document.querySelector('video.html5-main-video, video.rumble-player-video');
+                if (video) {
+                    if (video.muted) { console.log('[In-Page Eval] Video is muted, unmuting before play.'); video.muted = false; }
+                    video.play().then(() => console.log('[In-Page Eval] video.play() promise resolved.')).catch(err => console.warn('[In-Page Eval] JS video.play() failed:', err.message, err.name));
+                } else console.warn('[In-Page Eval] Video element not found for JS play.');
+            });
+            await page.waitForTimeout(1500 + Math.random() * 500);
+            if (await page.evaluate(() => document.querySelector('video.html5-main-video, video.rumble-player-video')?.paused === false)) {
+                loggerToUse.info('Video started playing after JavaScript play().'); return true;
+            }
+            loggerToUse.debug('Video still paused after JavaScript play() attempt.');
+        } catch (e) { loggerToUse.debug(`JavaScript play evaluation failed: ${e.message}`); }
+
+        try {
+            loggerToUse.debug('Strategy 4: Attempting Spacebar press.');
+            await page.locator('body').first().focus({timeout:1000}).catch(e => loggerToUse.debug('Failed to focus body for spacebar.'));
+            await page.keyboard.press('Space');
+            await page.waitForTimeout(1000 + Math.random() * 500);
+            if (await page.evaluate(() => document.querySelector('video.html5-main-video, video.rumble-player-video')?.paused === false)) {
+                loggerToUse.info('Video started playing after spacebar press.'); return true;
+            }
+            loggerToUse.debug('Video still paused after spacebar press.');
+        } catch (e) { loggerToUse.debug(`Spacebar press failed: ${e.message}`); }
+
+        if (attempt < 4) {
+            loggerToUse.debug(`Waiting ${2000 + attempt * 500}ms before next play attempt...`);
+            await page.waitForTimeout(2000 + attempt * 500);
+        }
+    }
+    loggerToUse.error('Failed to start video playback after all attempts');
+    return false;
+}
 
 async function handleYouTubeConsent(page, loggerToUse = GlobalLogger) {
     loggerToUse.info('Handling YouTube consent with comprehensive detection strategies...');
@@ -1032,7 +1173,7 @@ async function actorMainLogic() {
             if (!url || typeof url !== 'string' || (!url.includes('youtube.com') && !url.includes('youtu.be') && !url.includes('rumble.com'))) {
                 GlobalLogger.warning(`Invalid or unsupported URL at index ${i}: "${url}". Skipping.`); continue;
             }
-            const videoId = extractVideoId(url);
+            const videoId = extractVideoId(url); // Fixed: Ensure extractVideoId is defined and callable
             if (!videoId) { GlobalLogger.warning(`Could not extract video ID from URL: "${url}". Skipping.`); continue; }
             const platform = url.includes('youtube.com')||url.includes('youtu.be') ? 'youtube' : (url.includes('rumble.com') ? 'rumble' : 'unknown');
             if (platform === 'unknown') { GlobalLogger.warning(`Unknown platform for URL: "${url}". Skipping.`); continue; }

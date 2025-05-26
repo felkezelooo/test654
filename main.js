@@ -35,53 +35,9 @@ const ANTI_DETECTION_ARGS = [
 
 let GlobalLogger; 
 
-async function applyAntiDetectionAndCookieFixScripts(pageOrContext, loggerToUse = GlobalLogger) {
-    // This script runs BEFORE any page scripts, attempting to prevent problematic overrides.
-    const veryEarlyCookieInterventionScript = () => {
-        const log = (msg, level = 'info') => {
-            // Simplified logger for init script context
-            if (typeof console !== 'undefined' && typeof console[level] === 'function') {
-                console[level](`[VeryEarlyCookieFix] ${msg}`);
-            } else {
-                console.log(`[VeryEarlyCookieFix] ${msg}`);
-            }
-        };
-        log('Applying very early cookie intervention script.');
-
-        const originalDefineProperty = Object.defineProperty;
-        Object.defineProperty = function(obj, prop, descriptor) {
-            if (obj === document && prop === 'cookie') {
-                log('Intercepted Object.defineProperty call for document.cookie.');
-                // Optionally, log the descriptor YouTube is trying to set
-                // log('Descriptor being set by YouTube:', descriptor);
-                
-                // Instead of letting YouTube override, we can try to keep the original
-                // or make it a simple pass-through IF we haven't already defined it.
-                // This is tricky because we don't want to break legitimate uses later.
-                // For now, we'll just log and allow it, hoping our later re-definition takes precedence
-                // OR, we can try to NO-OP their specific problematic setter.
-                // Let's try to prevent their specific override:
-                if (descriptor && typeof descriptor.get === 'function' && descriptor.get.toString().includes("return '';")) {
-                    log('Problematic document.cookie getter detected. Attempting to prevent override.');
-                    return obj; // Effectively skip this defineProperty call
-                }
-                if (descriptor && typeof descriptor.set === 'function' && descriptor.set.toString().includes("return true;")) {
-                    log('Problematic document.cookie setter detected. Attempting to prevent override.');
-                    return obj; // Effectively skip this defineProperty call
-                }
-            }
-            // For cookieStore, if it's being set to an empty object by YouTube's script
-            if (obj === window && prop === 'cookieStore' && descriptor && descriptor.value && Object.keys(descriptor.value).length === 0) {
-                log('Intercepted attempt to set window.cookieStore to {}. Preventing.');
-                return obj;
-            }
-            return originalDefineProperty.call(this, obj, prop, descriptor);
-        };
-        log('Object.defineProperty has been wrapped.');
-    };
-
+// MODIFIED: Removed the cookieFixScript part. Only anti-detection.
+async function applyAntiDetectionScripts(pageOrContext) { // Renamed from applyAntiDetectionAndCookieFixScripts
     const antiDetectionScript = () => {
-        // ... (Standard anti-detection measures as before) ...
         if (navigator.webdriver === true) Object.defineProperty(navigator, 'webdriver', { get: () => false });
         if (navigator.languages && !navigator.languages.includes('en-US')) Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
         if (navigator.language !== 'en-US') Object.defineProperty(navigator, 'language', { get: () => 'en-US' });
@@ -134,12 +90,9 @@ async function applyAntiDetectionAndCookieFixScripts(pageOrContext, loggerToUse 
         if (navigator.mimeTypes) try { Object.defineProperty(navigator, 'mimeTypes', { get: () => [], configurable: true }); } catch(e) { (GlobalLogger || console).debug('Failed mimeType spoof:', e.message); }
     };
 
-    // Run the cookie intervention script first, then anti-detection.
     if (pageOrContext.addInitScript) {
-        await pageOrContext.addInitScript(veryEarlyCookieInterventionScript); 
         await pageOrContext.addInitScript(antiDetectionScript);
     } else { 
-        await pageOrContext.evaluateOnNewDocument(veryEarlyCookieInterventionScript);
         await pageOrContext.evaluateOnNewDocument(antiDetectionScript);
     }
 }
@@ -378,7 +331,7 @@ async function watchVideoOnPage(page, job, effectiveInput, loggerToUse = GlobalL
 }
 
 async function handleYouTubeConsent(page, loggerToUse = GlobalLogger) {
-    loggerToUse.info('Checking for YouTube/Google consent dialog (robust handler v3)...');
+    loggerToUse.info('Checking for YouTube/Google consent dialog (v4)...');
     
     const mainDialogOuterSelector = 'ytd-consent-bump-v2-lightbox#lightbox';
     const consentIframeSelectors = [
@@ -386,108 +339,122 @@ async function handleYouTubeConsent(page, loggerToUse = GlobalLogger) {
         'iframe[src*="consent.youtube.com"]'
     ];
     
-    const acceptButtonSelectors = [
-        'tp-yt-paper-dialog div.eom-buttons ytd-button-renderer button[aria-label*="Accept the use of cookies and other data for the purposes described"]',
-        'tp-yt-paper-dialog div.eom-buttons ytd-button-renderer button:has-text("Accept all")',
-        `${mainDialogOuterSelector} button[aria-label*="Accept the use of cookies"]:has-text("Accept all")`,
-        `${mainDialogOuterSelector} button:has-text("Accept all")`,
-        'button[aria-label*="Accept all"]:visible',
+    // Based on your provided HTML snippet for the "Accept all" button
+    const specificUkAcceptButtonSelector = 
+        'tp-yt-paper-dialog.ytd-consent-bump-v2-lightbox div.eom-buttons ytd-button-renderer button[aria-label="Accept the use of cookies and other data for the purposes described"]';
+    // A slightly broader version that also includes the text, useful if aria-label changes subtly
+    const specificUkAcceptButtonTextSelector = 
+        'tp-yt-paper-dialog.ytd-consent-bump-v2-lightbox div.eom-buttons ytd-button-renderer:has(span:text-is("Accept all")) button';
+
+
+    const generalAcceptButtonSelectors = [ // Fallbacks
+        'ytd-consent-bump-v2-lightbox button[aria-label*="Accept all"]',
+        'ytd-consent-bump-v2-lightbox button:has-text("Accept all")',
+        'button[aria-label*="Accept all"]:visible', // More general visible button
         'button:has-text("Accept all"):visible',
-        'button:has-text("AGREE"):visible',
-        'div[role="dialog"] button:has-text("Accept all")' 
+        'div[role="dialog"] button:has-text("Accept all"):visible'
     ];
 
     let clickedConsent = false;
-    let consentHandledBy = null; 
+    let consentSource = null; // 'iframe' or 'mainPage'
 
     for (let attempt = 1; attempt <= 3; attempt++) {
         loggerToUse.info(`Consent attempt ${attempt}`);
         let activeIframeLocator = null;
 
-        // 1. Check for iframes first
+        // 1. Check for iframes
         for (const frameSelector of consentIframeSelectors) {
             try {
                 const frameLocator = page.locator(frameSelector).first();
-                await frameLocator.waitFor({ state: 'visible', timeout: 4000 }); 
-                const elementHandle = await frameLocator.elementHandle();
-                if (elementHandle) {
-                    const frame = await elementHandle.contentFrame();
-                    if (frame) { 
-                        loggerToUse.info(`Consent iframe found: ${frameSelector}. Trying to click 'Accept all' inside.`);
-                        const iframeAcceptSelectors = [ 
-                            'button[aria-label*="Accept all"]', 'button:has-text("Accept all")', 'button[jsname*="LgbsSe"]'
-                        ];
-                        for (const selector of iframeAcceptSelectors) {
-                            if (await clickIfExists(frame, selector, 3000, loggerToUse, true)) { // Pass true for isFrameContext
-                                clickedConsent = true; consentHandledBy = 'iframe'; activeIframeLocator = frameLocator; break;
-                            }
+                await frameLocator.waitFor({ state: 'visible', timeout: 4000 });
+                const frame = await (await frameLocator.elementHandle())?.contentFrame();
+                if (frame) {
+                    loggerToUse.info(`Consent iframe found: ${frameSelector}. Checking for accept buttons.`);
+                    const iframeAcceptSelectors = [ 'button[aria-label*="Accept all"]', 'button:has-text("Accept all")' ];
+                    for (const selector of iframeAcceptSelectors) {
+                        if (await clickIfExists(frame, selector, 3000, loggerToUse, true)) {
+                            clickedConsent = true; consentSource = 'iframe'; activeIframeLocator = frameLocator; break;
                         }
-                        if (clickedConsent) break; 
                     }
+                    if (clickedConsent) break;
                 }
             } catch (e) { loggerToUse.debug(`Iframe ${frameSelector} not found/visible in attempt ${attempt}.`); }
         }
-        if (clickedConsent) break; 
+        if (clickedConsent) break;
 
-        // 2. If not clicked in an iframe, try the main page dialog
-        if (!consentHandledBy) { 
-            loggerToUse.info('No iframe consent clicked or iframe not found. Checking main page dialog.');
+        // 2. Check main page dialog
+        if (!consentSource) { // Only if not handled by iframe
+            loggerToUse.info('No iframe consent. Checking main page dialog.');
             try {
-                await page.locator(mainDialogOuterSelector).first().waitFor({ state: 'attached', timeout: 7000 });
-                loggerToUse.info(`Main page consent dialog container (${mainDialogOuterSelector}) is attached. Attempting clicks.`);
-                for (const selector of acceptButtonSelectors) {
-                    if (await clickIfExists(page, selector, 7000, loggerToUse)) {
-                        clickedConsent = true; consentHandledBy = 'mainPage'; break;
+                await page.locator(mainDialogOuterSelector).first().waitFor({ state: 'visible', timeout: 7000 });
+                loggerToUse.info(`Main page consent dialog (${mainDialogOuterSelector}) is visible.`);
+                
+                if (await clickIfExists(page, specificUkAcceptButtonSelector, 5000, loggerToUse)) {
+                    clickedConsent = true; consentSource = 'mainPage';
+                } else if (await clickIfExists(page, specificUkAcceptButtonTextSelector, 5000, loggerToUse)) {
+                    clickedConsent = true; consentSource = 'mainPage';
+                } else {
+                    loggerToUse.debug('Specific UK button selectors failed. Trying general ones.');
+                    for (const selector of generalAcceptButtonSelectors) {
+                        if (await clickIfExists(page, selector, 5000, loggerToUse)) {
+                            clickedConsent = true; consentSource = 'mainPage'; break;
+                        }
                     }
                 }
             } catch (e) {
-                loggerToUse.debug(`Main page consent dialog container not found or other error in attempt ${attempt}: ${e.message.split('\n')[0]}`);
+                loggerToUse.debug(`Main page consent dialog not found or error in attempt ${attempt}: ${e.message.split('\n')[0]}`);
             }
         }
 
-        if (clickedConsent) {
-            loggerToUse.info(`An "Accept" button was clicked (via ${consentHandledBy}). Waiting for page to settle after potential refresh.`);
-            try {
-                await Promise.race([
-                    page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 25000 }), // Increased timeout
-                    page.waitForLoadState('networkidle', { timeout: 25000 })  // Increased timeout
-                ]);
-                loggerToUse.info('Page navigated/reloaded or network became idle after consent click.');
-            } catch (navOrIdleError) {
-                loggerToUse.warning(`No full navigation or network idle detected after consent click (or timeout): ${navOrIdleError.message.split('\n')[0]}. Checking dialog visibility.`);
-            }
-            
-            // Final check: ensure the dialog is truly gone.
-            try {
-                const dialogToCheck = activeIframeLocator || page.locator(mainDialogOuterSelector).first();
-                await dialogToCheck.waitFor({ state: 'hidden', timeout: 15000 }); // Increased timeout
-                loggerToUse.info('Consent dialog/iframe is now hidden.');
-                await page.waitForTimeout(2000 + Math.random() * 1000); // Extra stabilization
-                return true; 
-            } catch (hiddenError) {
-                loggerToUse.warning(`Consent dialog/iframe did NOT become hidden after click and potential navigation. Error: ${hiddenError.message.split('\n')[0]}.`);
-                 // If it didn't hide, maybe the page refreshed but the dialog is back?
-                 // Check if the dialog is *still* visible to avoid infinite loops if click didn't work.
-                const stillThere = await (activeIframeLocator || page.locator(mainDialogOuterSelector).first()).isVisible({timeout: 1000}).catch(()=>false);
-                if (stillThere) {
-                    loggerToUse.error('Consent dialog reappeared or never left after click and wait. Aborting this consent attempt.');
-                    return false; // Indicate failure to prevent infinite loops on video link click
-                } else {
-                    loggerToUse.info('Dialog seems gone despite hidden check timeout. Proceeding cautiously.');
-                    await page.waitForTimeout(2000 + Math.random() * 1000);
-                    return true;
-                }
-            }
-        }
-        
+        if (clickedConsent) break; // Exit retry loop if clicked
+
         if (attempt < 3) {
             loggerToUse.info(`Consent not resolved in attempt ${attempt}, retrying...`);
-            await page.waitForTimeout(3000 + Math.random() * 1500); 
+            await page.waitForTimeout(3000 + Math.random() * 1000);
         }
+    } // End of retry loop
+
+    if (clickedConsent) {
+        loggerToUse.info(`An "Accept" button was clicked (via ${consentSource}). Waiting for page to stabilize after potential refresh (up to 25s).`);
+        try {
+            // Wait for navigation to complete OR network to be idle for a bit.
+            // This should handle the page refresh scenario.
+            await page.waitForLoadState('domcontentloaded', { timeout: 25000 });
+            loggerToUse.info('Page reached "domcontentloaded" after consent click.');
+            // Add an additional small wait for JS to potentially finish processing after DOM load
+            await page.waitForTimeout(2000); 
+            
+            // Final check: Ensure the dialog is truly gone.
+            const dialogStillVisible = await page.locator(mainDialogOuterSelector).first().isVisible({timeout: 5000}).catch(() => false);
+            if (dialogStillVisible) {
+                loggerToUse.warning('Consent dialog STILL VISIBLE after click and page stabilization. This indicates a problem.');
+                // Consider taking a screenshot here if it's still visible
+                if (page && ApifyModule.Actor.isAtHome()) {
+                    const screenshotBuffer = await page.screenshot({fullPage: true, timeout: 10000});
+                    await ApifyModule.Actor.setValue(`SCREENSHOT_CONSENT_STILL_VISIBLE_${uuidv4().substring(0,8)}`, screenshotBuffer, { contentType: 'image/png' });
+                }
+                return false; // Indicate consent handling ultimately failed
+            } else {
+                loggerToUse.info('Consent dialog confirmed hidden after click and stabilization.');
+            }
+        } catch (navError) {
+            loggerToUse.warning(`Error or timeout during page stabilization after consent click: ${navError.message.split('\n')[0]}.`);
+            // Even if waitForLoadState timed out, the dialog might have closed via JS.
+            // Check if the dialog is hidden as a last resort.
+            try {
+                await page.locator(mainDialogOuterSelector).first().waitFor({ state: 'hidden', timeout: 10000 });
+                loggerToUse.info('Consent dialog confirmed hidden despite earlier stabilization timeout.');
+            } catch (hiddenError) {
+                loggerToUse.error(`Consent dialog did NOT become hidden after all waits. Error: ${hiddenError.message.split('\n')[0]}`);
+                return false; // Consent handling failed
+            }
+        }
+        loggerToUse.info('Consent handling process finished successfully.');
+        return true;
     }
     
-    loggerToUse.warning('Failed to handle consent dialog after all attempts.');
-    // If still failing after all attempts, take a screenshot and save HTML
+    loggerToUse.error('Failed to handle consent dialog after all attempts (no button successfully clicked or confirmed dismissed).');
+    // Save debug info if all attempts fail
     if (page && ApifyModule.Actor.isAtHome()) {
         try {
             loggerToUse.info('Attempting to capture HTML/Screenshot on final consent failure...');
@@ -501,7 +468,7 @@ async function handleYouTubeConsent(page, loggerToUse = GlobalLogger) {
             loggerToUse.warning(`Could not capture debug info on final consent failure: ${captureError.message}`);
         }
     }
-    return false;
+    return false; 
 }
 
 
@@ -594,7 +561,7 @@ async function runSingleJob(job, effectiveInput, actorProxyConfiguration, custom
             javaScriptEnabled: true,
         });
 
-        await applyAntiDetectionAndCookieFixScripts(context, jobScopedLogger);
+        await applyAntiDetectionScripts(context, jobScopedLogger); // REMOVED cookieFixScript part
 
 
         if (job.watchType === 'referer' && job.refererUrl) {

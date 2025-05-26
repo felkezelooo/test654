@@ -38,10 +38,9 @@ let GlobalLogger;
 async function applyAntiDetectionAndCookieFixScripts(pageOrContext, loggerToUse = GlobalLogger) {
     const cookieFixScript = () => {
         const log = (msg, level = 'info') => {
-            // This internal logger will try to use the passed logger or fallback
-            if (typeof loggerToUse === 'function') { // Simple check if loggerToUse is the Apify log object
+            if (typeof loggerToUse === 'function') { 
                  loggerToUse[level] ? loggerToUse[level](`[CookieFix] ${msg}`) : console[level](`[CookieFix] ${msg}`);
-            } else if (loggerToUse && typeof loggerToUse[level] === 'function') { // Check if it's our jobScopedLogger
+            } else if (loggerToUse && typeof loggerToUse[level] === 'function') { 
                 loggerToUse[level](`[CookieFix] ${msg}`);
             }
              else {
@@ -51,9 +50,7 @@ async function applyAntiDetectionAndCookieFixScripts(pageOrContext, loggerToUse 
 
         try {
             log('Attempting to redefine document.cookie...');
-            let actualPageCookies = ''; // This will store our simulated cookies
-
-            // Try to get initial cookies IF the original descriptor is still somewhat intact
+            let actualPageCookies = ''; 
             try {
                 const initialDescriptor = Object.getOwnPropertyDescriptor(Document.prototype, 'cookie') || Object.getOwnPropertyDescriptor(HTMLDocument.prototype, 'cookie');
                 if (initialDescriptor && typeof initialDescriptor.get === 'function') {
@@ -64,35 +61,30 @@ async function applyAntiDetectionAndCookieFixScripts(pageOrContext, loggerToUse 
                 log(`Could not read initial document.cookie: ${e.message}`, 'warn');
             }
 
-
             Object.defineProperty(document, 'cookie', {
-                configurable: true, // ESSENTIAL: Allows YouTube's own scripts to potentially redefine it later if needed, or for us to refine
+                configurable: true, 
                 get: function() {
                     log(`document.cookie getter called. Returning: "${actualPageCookies}"`);
                     return actualPageCookies;
                 },
                 set: function(val) {
                     log(`document.cookie setter called with: "${val}"`);
-                    // Basic parsing: name=value; attributes
                     const cookiePair = val.split(';')[0].trim();
                     const [name] = cookiePair.split('=');
                     
-                    // Update our simulated cookie string
                     let cookiesArray = actualPageCookies ? actualPageCookies.split('; ') : [];
-                    cookiesArray = cookiesArray.filter(cookie => !cookie.startsWith(name + '=') && cookie.trim() !== ''); // Remove old version of this cookie
-                    cookiesArray.push(cookiePair); // Add new/updated cookie
+                    cookiesArray = cookiesArray.filter(cookie => !cookie.startsWith(name + '=') && cookie.trim() !== ''); 
+                    cookiesArray.push(cookiePair); 
                     actualPageCookies = cookiesArray.join('; ');
                     
                     log(`Simulated document.cookie is now: "${actualPageCookies}"`);
-                    return true; // Must return true to not break scripts expecting it
+                    return true; 
                 }
             });
             log('document.cookie redefined.');
 
             if (window.cookieStore) {
                 log('Attempting to neutralize cookieStore override if it was made an empty object.');
-                // This is tricky. If it's truly {}, we can't easily restore it.
-                // This mainly serves to log its state.
                 if (Object.keys(window.cookieStore).length === 0 && typeof window.cookieStore.set !== 'function') {
                     log('window.cookieStore appears to be an empty object. Standard CookieStore API will not work.', 'warn');
                 }
@@ -104,7 +96,6 @@ async function applyAntiDetectionAndCookieFixScripts(pageOrContext, loggerToUse 
     };
     
     const antiDetectionScript = () => {
-        // ... (rest of your anti-detection measures from previous version) ...
         if (navigator.webdriver === true) Object.defineProperty(navigator, 'webdriver', { get: () => false });
         if (navigator.languages && !navigator.languages.includes('en-US')) Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
         if (navigator.language !== 'en-US') Object.defineProperty(navigator, 'language', { get: () => 'en-US' });
@@ -152,7 +143,7 @@ async function applyAntiDetectionAndCookieFixScripts(pageOrContext, loggerToUse 
                 Object.defineProperty(window.screen, 'pixelDepth', { get: () => 24, configurable: true });
             } catch (e) { (GlobalLogger || console).debug('Failed screen spoof:', e.message); }
         }
-        try { Date.prototype.getTimezoneOffset = function() { return 0 * 60; }; } catch (e) { (GlobalLogger || console).debug('Failed timezone spoof:', e.message); }
+        try { Date.prototype.getTimezoneOffset = function() { return 0 * 60; }; } catch (e) { (GlobalLogger || console).debug('Failed timezone spoof:', e.message); } 
         if (navigator.plugins) try { Object.defineProperty(navigator, 'plugins', { get: () => [], configurable: true }); } catch(e) { (GlobalLogger || console).debug('Failed plugin spoof:', e.message); }
         if (navigator.mimeTypes) try { Object.defineProperty(navigator, 'mimeTypes', { get: () => [], configurable: true }); } catch(e) { (GlobalLogger || console).debug('Failed mimeType spoof:', e.message); }
     };
@@ -166,7 +157,23 @@ async function applyAntiDetectionAndCookieFixScripts(pageOrContext, loggerToUse 
     }
 }
 
-// ... (getVideoDuration, clickIfExists, handleAds, ensureVideoPlaying, watchVideoOnPage remain the same as your last version) ...
+// Ensure extractVideoId is defined at the top level
+function extractVideoId(url) {
+    try {
+        const urlObj = new URL(url);
+        if (url.includes('youtube.com') || url.includes('youtu.be')) {
+            return urlObj.searchParams.get('v') || urlObj.pathname.substring(1);
+        } else if (url.includes('rumble.com')) {
+            const pathParts = urlObj.pathname.split('/');
+            const lastPart = pathParts[pathParts.length - 1];
+            return lastPart.split('-')[0] || lastPart;
+        }
+    } catch (error) {
+        (GlobalLogger || console).error(`Error extracting video ID from URL ${url}: ${error.message}`);
+    }
+    return null;
+}
+
 async function getVideoDuration(page, loggerToUse = GlobalLogger) { 
     (loggerToUse || console).info('Attempting to get video duration.');
     for (let i = 0; i < 15; i++) {
@@ -385,24 +392,23 @@ async function watchVideoOnPage(page, job, effectiveInput, loggerToUse = GlobalL
 }
 
 async function handleYouTubeConsent(page, loggerToUse = GlobalLogger) {
-    loggerToUse.info('Checking for YouTube/Google consent dialog (robust handler v2)...');
+    loggerToUse.info('Checking for YouTube/Google consent dialog (robust handler v3)...');
     
-    const mainDialogOuterSelector = 'ytd-consent-bump-v2-lightbox#lightbox'; // The actual overlay
+    const mainDialogOuterSelector = 'ytd-consent-bump-v2-lightbox#lightbox';
     const consentIframeSelectors = [
         'iframe[src*="consent.google.com"]',
         'iframe[src*="consent.youtube.com"]'
     ];
     
     const acceptButtonSelectors = [
-        // Most specific for UK dialog structure from HTML (inside tp-yt-paper-dialog which is inside ytd-consent-bump-v2-lightbox)
-        'ytd-consent-bump-v2-lightbox#lightbox tp-yt-paper-dialog div.eom-buttons ytd-button-renderer button[aria-label*="Accept the use of cookies and other data for the purposes described"]',
-        'ytd-consent-bump-v2-lightbox#lightbox tp-yt-paper-dialog div.eom-buttons ytd-button-renderer button:has-text("Accept all")',
-        // General selectors targeting the outer consent bump or common patterns, assuming Playwright's :visible handles overlays
-        `${mainDialogOuterSelector} button[aria-label*="Accept the use of cookies"]:visible`,
-        `${mainDialogOuterSelector} button:has-text("Accept all"):visible`,
+        'tp-yt-paper-dialog div.eom-buttons ytd-button-renderer button[aria-label*="Accept the use of cookies and other data for the purposes described"]',
+        'tp-yt-paper-dialog div.eom-buttons ytd-button-renderer button:has-text("Accept all")',
+        `${mainDialogOuterSelector} button[aria-label*="Accept the use of cookies"]:has-text("Accept all")`,
+        `${mainDialogOuterSelector} button:has-text("Accept all")`,
         'button[aria-label*="Accept all"]:visible',
         'button:has-text("Accept all"):visible',
         'button:has-text("AGREE"):visible',
+        'div[role="dialog"] button:has-text("Accept all")' // Last resort, less specific
     ];
 
     let clickedConsent = false;
@@ -416,42 +422,35 @@ async function handleYouTubeConsent(page, loggerToUse = GlobalLogger) {
         for (const frameSelector of consentIframeSelectors) {
             try {
                 const frameLocator = page.locator(frameSelector).first();
-                await frameLocator.waitFor({ state: 'visible', timeout: 3000 }); // Shorter timeout for quick check
+                await frameLocator.waitFor({ state: 'visible', timeout: 4000 }); // Short timeout for quick check
                 const frame = await (await frameLocator.elementHandle())?.contentFrame();
                 if (frame) {
                     loggerToUse.info(`Consent iframe found: ${frameSelector}. Trying to click 'Accept all' inside.`);
-                    const iframeAcceptSelectors = [ // Simpler selectors often work better in iframes
-                        'button[aria-label*="Accept all"]', 'button:has-text("Accept all")', 'button[jsname*="LgbsSe"]',
-                        'div[role="button"]:has-text("Accept all")' // For good measure
+                    const iframeAcceptSelectors = [ 
+                        'button[aria-label*="Accept all"]', 'button:has-text("Accept all")', 'button[jsname*="LgbsSe"]'
                     ];
                     for (const selector of iframeAcceptSelectors) {
                         if (await clickIfExists(frame, selector, 3000, loggerToUse, true)) {
-                            clickedConsent = true;
-                            consentHandledBy = 'iframe';
-                            activeIframeLocator = frameLocator;
-                            break;
+                            clickedConsent = true; consentHandledBy = 'iframe'; activeIframeLocator = frameLocator; break;
                         }
                     }
                     if (clickedConsent) break; 
                 }
-            } catch (e) {
-                loggerToUse.debug(`Iframe ${frameSelector} not found/visible or error in attempt ${attempt}: ${e.message.split('\n')[0]}`);
-            }
+            } catch (e) { loggerToUse.debug(`Iframe ${frameSelector} not found/visible in attempt ${attempt}.`); }
         }
         if (clickedConsent) break; 
 
-        // 2. If not clicked in an iframe, try the main page dialog
-        if (!consentHandledBy) { // Check if consent was NOT handled by iframe
+        // 2. If no iframe or click in iframe failed, check main page dialog
+        if (!consentHandledBy) { 
             loggerToUse.info('No iframe consent clicked or iframe not found. Checking main page dialog.');
             try {
-                // Wait for the main dialog container itself to be potentially visible or attached
-                await page.locator(mainDialogOuterSelector).first().waitFor({ state: 'visible', timeout: 7000 });
-                loggerToUse.info(`Main page consent dialog container (${mainDialogOuterSelector}) is visible. Attempting clicks.`);
+                // Try to make sure the dialog exists before attempting to click within it.
+                // Using 'attached' might be better if 'visible' is problematic due to animations/overlays.
+                await page.locator(mainDialogOuterSelector).first().waitFor({ state: 'attached', timeout: 7000 });
+                loggerToUse.info(`Main page consent dialog container (${mainDialogOuterSelector}) is attached. Attempting clicks.`);
                 for (const selector of acceptButtonSelectors) {
                     if (await clickIfExists(page, selector, 7000, loggerToUse)) {
-                        clickedConsent = true;
-                        consentHandledBy = 'mainPage';
-                        break;
+                        clickedConsent = true; consentHandledBy = 'mainPage'; break;
                     }
                 }
             } catch (e) {
@@ -460,33 +459,38 @@ async function handleYouTubeConsent(page, loggerToUse = GlobalLogger) {
         }
 
         if (clickedConsent) {
-            loggerToUse.info(`An "Accept" button was clicked (via ${consentHandledBy}). Waiting for navigation or dialog to disappear.`);
+            loggerToUse.info(`An "Accept" button was clicked (via ${consentHandledBy}). Waiting for page to settle after potential refresh.`);
             try {
-                // Expecting a page refresh or navigation, wait for it.
-                // If no navigation, the subsequent .waitFor({ state: 'hidden' }) will handle dialog disappearance.
-                await page.waitForLoadState('domcontentloaded', { timeout: 25000 });
-                loggerToUse.info('Page reached "domcontentloaded" after consent click (implies navigation or refresh).');
-            } catch (navError) {
-                loggerToUse.info(`No full navigation/reload detected (or timeout): ${navError.message.split('\n')[0]}. Checking if dialog is hidden.`);
+                // Wait for a navigation to complete OR for the network to be idle for a short period.
+                // This handles cases where a full navigation happens or where the dialog closes via JS.
+                await Promise.race([
+                    page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 20000 }),
+                    page.waitForLoadState('networkidle', { timeout: 20000 }) 
+                ]);
+                loggerToUse.info('Page navigated/reloaded or network became idle after consent click.');
+            } catch (navOrIdleError) {
+                loggerToUse.warning(`No full navigation or network idle detected after consent click (or timeout): ${navOrIdleError.message.split('\n')[0]}. Checking dialog visibility.`);
             }
             
-            // After potential navigation or just a JS action, ensure the dialog is gone
+            // Final check: ensure the dialog is truly gone.
             try {
-                const dialogToHide = activeIframeLocator || page.locator(mainDialogOuterSelector).first();
-                await dialogToHide.waitFor({ state: 'hidden', timeout: 15000 }); // Longer wait for it to hide
+                const dialogToCheck = activeIframeLocator || page.locator(mainDialogOuterSelector).first();
+                 // If activeIframeLocator is set, it means we clicked in an iframe, check if that iframe is gone.
+                // Otherwise, check if the main dialog on the page is gone.
+                await dialogToCheck.waitFor({ state: 'hidden', timeout: 10000 });
                 loggerToUse.info('Consent dialog/iframe is now hidden.');
             } catch (hiddenError) {
                 loggerToUse.warning(`Consent dialog/iframe did not become hidden after click and potential navigation. Error: ${hiddenError.message.split('\n')[0]}.`);
             }
             
-            await page.waitForTimeout(2000 + Math.random() * 1000); // Stabilization
+            await page.waitForTimeout(2500 + Math.random() * 1000); // Extra stabilization
             loggerToUse.info('Consent handling process finished.');
-            return true; // Successfully handled
+            return true; 
         }
 
         if (attempt < 3) {
             loggerToUse.info(`Consent not resolved in attempt ${attempt}, will retry after a short delay.`);
-            await page.waitForTimeout(3000 + Math.random() * 1000); 
+            await page.waitForTimeout(3000 + Math.random() * 1500); 
         }
     }
     

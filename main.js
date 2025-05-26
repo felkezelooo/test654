@@ -36,66 +36,52 @@ const ANTI_DETECTION_ARGS = [
 let GlobalLogger; 
 
 async function applyAntiDetectionAndCookieFixScripts(pageOrContext, loggerToUse = GlobalLogger) {
-    const cookieFixScript = () => {
+    // This script runs BEFORE any page scripts, attempting to prevent problematic overrides.
+    const veryEarlyCookieInterventionScript = () => {
         const log = (msg, level = 'info') => {
-            if (typeof loggerToUse === 'function') { 
-                 loggerToUse[level] ? loggerToUse[level](`[CookieFix] ${msg}`) : console[level](`[CookieFix] ${msg}`);
-            } else if (loggerToUse && typeof loggerToUse[level] === 'function') { 
-                loggerToUse[level](`[CookieFix] ${msg}`);
-            }
-             else {
-                console[level](`[CookieFix] ${msg}`);
+            // Simplified logger for init script context
+            if (typeof console !== 'undefined' && typeof console[level] === 'function') {
+                console[level](`[VeryEarlyCookieFix] ${msg}`);
+            } else {
+                console.log(`[VeryEarlyCookieFix] ${msg}`);
             }
         };
+        log('Applying very early cookie intervention script.');
 
-        try {
-            log('Attempting to redefine document.cookie...');
-            let actualPageCookies = ''; 
-            try {
-                const initialDescriptor = Object.getOwnPropertyDescriptor(Document.prototype, 'cookie') || Object.getOwnPropertyDescriptor(HTMLDocument.prototype, 'cookie');
-                if (initialDescriptor && typeof initialDescriptor.get === 'function') {
-                    actualPageCookies = initialDescriptor.get.call(document) || '';
-                    log(`Initial document.cookie read (best effort): "${actualPageCookies}"`);
+        const originalDefineProperty = Object.defineProperty;
+        Object.defineProperty = function(obj, prop, descriptor) {
+            if (obj === document && prop === 'cookie') {
+                log('Intercepted Object.defineProperty call for document.cookie.');
+                // Optionally, log the descriptor YouTube is trying to set
+                // log('Descriptor being set by YouTube:', descriptor);
+                
+                // Instead of letting YouTube override, we can try to keep the original
+                // or make it a simple pass-through IF we haven't already defined it.
+                // This is tricky because we don't want to break legitimate uses later.
+                // For now, we'll just log and allow it, hoping our later re-definition takes precedence
+                // OR, we can try to NO-OP their specific problematic setter.
+                // Let's try to prevent their specific override:
+                if (descriptor && typeof descriptor.get === 'function' && descriptor.get.toString().includes("return '';")) {
+                    log('Problematic document.cookie getter detected. Attempting to prevent override.');
+                    return obj; // Effectively skip this defineProperty call
                 }
-            } catch (e) {
-                log(`Could not read initial document.cookie: ${e.message}`, 'warn');
-            }
-
-            Object.defineProperty(document, 'cookie', {
-                configurable: true, 
-                get: function() {
-                    log(`document.cookie getter called. Returning: "${actualPageCookies}"`);
-                    return actualPageCookies;
-                },
-                set: function(val) {
-                    log(`document.cookie setter called with: "${val}"`);
-                    const cookiePair = val.split(';')[0].trim();
-                    const [name] = cookiePair.split('=');
-                    
-                    let cookiesArray = actualPageCookies ? actualPageCookies.split('; ') : [];
-                    cookiesArray = cookiesArray.filter(cookie => !cookie.startsWith(name + '=') && cookie.trim() !== ''); 
-                    cookiesArray.push(cookiePair); 
-                    actualPageCookies = cookiesArray.join('; ');
-                    
-                    log(`Simulated document.cookie is now: "${actualPageCookies}"`);
-                    return true; 
-                }
-            });
-            log('document.cookie redefined.');
-
-            if (window.cookieStore) {
-                log('Attempting to neutralize cookieStore override if it was made an empty object.');
-                if (Object.keys(window.cookieStore).length === 0 && typeof window.cookieStore.set !== 'function') {
-                    log('window.cookieStore appears to be an empty object. Standard CookieStore API will not work.', 'warn');
+                if (descriptor && typeof descriptor.set === 'function' && descriptor.set.toString().includes("return true;")) {
+                    log('Problematic document.cookie setter detected. Attempting to prevent override.');
+                    return obj; // Effectively skip this defineProperty call
                 }
             }
-
-        } catch (e) {
-            log(`Error during cookieFixScript: ${e.message}`, 'error');
-        }
+            // For cookieStore, if it's being set to an empty object by YouTube's script
+            if (obj === window && prop === 'cookieStore' && descriptor && descriptor.value && Object.keys(descriptor.value).length === 0) {
+                log('Intercepted attempt to set window.cookieStore to {}. Preventing.');
+                return obj;
+            }
+            return originalDefineProperty.call(this, obj, prop, descriptor);
+        };
+        log('Object.defineProperty has been wrapped.');
     };
-    
+
     const antiDetectionScript = () => {
+        // ... (Standard anti-detection measures as before) ...
         if (navigator.webdriver === true) Object.defineProperty(navigator, 'webdriver', { get: () => false });
         if (navigator.languages && !navigator.languages.includes('en-US')) Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
         if (navigator.language !== 'en-US') Object.defineProperty(navigator, 'language', { get: () => 'en-US' });
@@ -148,16 +134,16 @@ async function applyAntiDetectionAndCookieFixScripts(pageOrContext, loggerToUse 
         if (navigator.mimeTypes) try { Object.defineProperty(navigator, 'mimeTypes', { get: () => [], configurable: true }); } catch(e) { (GlobalLogger || console).debug('Failed mimeType spoof:', e.message); }
     };
 
+    // Run the cookie intervention script first, then anti-detection.
     if (pageOrContext.addInitScript) {
-        await pageOrContext.addInitScript(cookieFixScript); 
+        await pageOrContext.addInitScript(veryEarlyCookieInterventionScript); 
         await pageOrContext.addInitScript(antiDetectionScript);
     } else { 
-        await pageOrContext.evaluateOnNewDocument(cookieFixScript);
+        await pageOrContext.evaluateOnNewDocument(veryEarlyCookieInterventionScript);
         await pageOrContext.evaluateOnNewDocument(antiDetectionScript);
     }
 }
 
-// Ensure extractVideoId is defined at the top level
 function extractVideoId(url) {
     try {
         const urlObj = new URL(url);
@@ -408,7 +394,7 @@ async function handleYouTubeConsent(page, loggerToUse = GlobalLogger) {
         'button[aria-label*="Accept all"]:visible',
         'button:has-text("Accept all"):visible',
         'button:has-text("AGREE"):visible',
-        'div[role="dialog"] button:has-text("Accept all")' // Last resort, less specific
+        'div[role="dialog"] button:has-text("Accept all")' 
     ];
 
     let clickedConsent = false;
@@ -422,30 +408,31 @@ async function handleYouTubeConsent(page, loggerToUse = GlobalLogger) {
         for (const frameSelector of consentIframeSelectors) {
             try {
                 const frameLocator = page.locator(frameSelector).first();
-                await frameLocator.waitFor({ state: 'visible', timeout: 4000 }); // Short timeout for quick check
-                const frame = await (await frameLocator.elementHandle())?.contentFrame();
-                if (frame) {
-                    loggerToUse.info(`Consent iframe found: ${frameSelector}. Trying to click 'Accept all' inside.`);
-                    const iframeAcceptSelectors = [ 
-                        'button[aria-label*="Accept all"]', 'button:has-text("Accept all")', 'button[jsname*="LgbsSe"]'
-                    ];
-                    for (const selector of iframeAcceptSelectors) {
-                        if (await clickIfExists(frame, selector, 3000, loggerToUse, true)) {
-                            clickedConsent = true; consentHandledBy = 'iframe'; activeIframeLocator = frameLocator; break;
+                await frameLocator.waitFor({ state: 'visible', timeout: 4000 }); 
+                const elementHandle = await frameLocator.elementHandle();
+                if (elementHandle) {
+                    const frame = await elementHandle.contentFrame();
+                    if (frame) { 
+                        loggerToUse.info(`Consent iframe found: ${frameSelector}. Trying to click 'Accept all' inside.`);
+                        const iframeAcceptSelectors = [ 
+                            'button[aria-label*="Accept all"]', 'button:has-text("Accept all")', 'button[jsname*="LgbsSe"]'
+                        ];
+                        for (const selector of iframeAcceptSelectors) {
+                            if (await clickIfExists(frame, selector, 3000, loggerToUse, true)) { // Pass true for isFrameContext
+                                clickedConsent = true; consentHandledBy = 'iframe'; activeIframeLocator = frameLocator; break;
+                            }
                         }
+                        if (clickedConsent) break; 
                     }
-                    if (clickedConsent) break; 
                 }
             } catch (e) { loggerToUse.debug(`Iframe ${frameSelector} not found/visible in attempt ${attempt}.`); }
         }
         if (clickedConsent) break; 
 
-        // 2. If no iframe or click in iframe failed, check main page dialog
+        // 2. If not clicked in an iframe, try the main page dialog
         if (!consentHandledBy) { 
             loggerToUse.info('No iframe consent clicked or iframe not found. Checking main page dialog.');
             try {
-                // Try to make sure the dialog exists before attempting to click within it.
-                // Using 'attached' might be better if 'visible' is problematic due to animations/overlays.
                 await page.locator(mainDialogOuterSelector).first().waitFor({ state: 'attached', timeout: 7000 });
                 loggerToUse.info(`Main page consent dialog container (${mainDialogOuterSelector}) is attached. Attempting clicks.`);
                 for (const selector of acceptButtonSelectors) {
@@ -461,11 +448,9 @@ async function handleYouTubeConsent(page, loggerToUse = GlobalLogger) {
         if (clickedConsent) {
             loggerToUse.info(`An "Accept" button was clicked (via ${consentHandledBy}). Waiting for page to settle after potential refresh.`);
             try {
-                // Wait for a navigation to complete OR for the network to be idle for a short period.
-                // This handles cases where a full navigation happens or where the dialog closes via JS.
                 await Promise.race([
-                    page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 20000 }),
-                    page.waitForLoadState('networkidle', { timeout: 20000 }) 
+                    page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 25000 }), // Increased timeout
+                    page.waitForLoadState('networkidle', { timeout: 25000 })  // Increased timeout
                 ]);
                 loggerToUse.info('Page navigated/reloaded or network became idle after consent click.');
             } catch (navOrIdleError) {
@@ -475,26 +460,47 @@ async function handleYouTubeConsent(page, loggerToUse = GlobalLogger) {
             // Final check: ensure the dialog is truly gone.
             try {
                 const dialogToCheck = activeIframeLocator || page.locator(mainDialogOuterSelector).first();
-                 // If activeIframeLocator is set, it means we clicked in an iframe, check if that iframe is gone.
-                // Otherwise, check if the main dialog on the page is gone.
-                await dialogToCheck.waitFor({ state: 'hidden', timeout: 10000 });
+                await dialogToCheck.waitFor({ state: 'hidden', timeout: 15000 }); // Increased timeout
                 loggerToUse.info('Consent dialog/iframe is now hidden.');
+                await page.waitForTimeout(2000 + Math.random() * 1000); // Extra stabilization
+                return true; 
             } catch (hiddenError) {
-                loggerToUse.warning(`Consent dialog/iframe did not become hidden after click and potential navigation. Error: ${hiddenError.message.split('\n')[0]}.`);
+                loggerToUse.warning(`Consent dialog/iframe did NOT become hidden after click and potential navigation. Error: ${hiddenError.message.split('\n')[0]}.`);
+                 // If it didn't hide, maybe the page refreshed but the dialog is back?
+                 // Check if the dialog is *still* visible to avoid infinite loops if click didn't work.
+                const stillThere = await (activeIframeLocator || page.locator(mainDialogOuterSelector).first()).isVisible({timeout: 1000}).catch(()=>false);
+                if (stillThere) {
+                    loggerToUse.error('Consent dialog reappeared or never left after click and wait. Aborting this consent attempt.');
+                    return false; // Indicate failure to prevent infinite loops on video link click
+                } else {
+                    loggerToUse.info('Dialog seems gone despite hidden check timeout. Proceeding cautiously.');
+                    await page.waitForTimeout(2000 + Math.random() * 1000);
+                    return true;
+                }
             }
-            
-            await page.waitForTimeout(2500 + Math.random() * 1000); // Extra stabilization
-            loggerToUse.info('Consent handling process finished.');
-            return true; 
         }
-
+        
         if (attempt < 3) {
-            loggerToUse.info(`Consent not resolved in attempt ${attempt}, will retry after a short delay.`);
+            loggerToUse.info(`Consent not resolved in attempt ${attempt}, retrying...`);
             await page.waitForTimeout(3000 + Math.random() * 1500); 
         }
     }
     
     loggerToUse.warning('Failed to handle consent dialog after all attempts.');
+    // If still failing after all attempts, take a screenshot and save HTML
+    if (page && ApifyModule.Actor.isAtHome()) {
+        try {
+            loggerToUse.info('Attempting to capture HTML/Screenshot on final consent failure...');
+            const htmlContent = await page.content({timeout: 10000}).catch(e => `Failed to get HTML: ${e.message}`);
+            await ApifyModule.Actor.setValue(`HTML_CONSENT_FINAL_FAIL_${uuidv4().substring(0,8)}`, htmlContent, {contentType: 'text/html'});
+            
+            const screenshotBuffer = await page.screenshot({fullPage: true, timeout: 10000});
+            await ApifyModule.Actor.setValue(`SCREENSHOT_CONSENT_FINAL_FAIL_${uuidv4().substring(0,8)}`, screenshotBuffer, { contentType: 'image/png' });
+            loggerToUse.info('Saved HTML and screenshot on final consent handling failure.');
+        } catch (captureError) {
+            loggerToUse.warning(`Could not capture debug info on final consent failure: ${captureError.message}`);
+        }
+    }
     return false;
 }
 
